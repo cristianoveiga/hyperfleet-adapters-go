@@ -24,8 +24,14 @@ type ReleaseSpec struct {
 	Version string `json:"version"`
 }
 
-// GCPPlatform holds GCP-specific cluster platform fields.
+// GCPPlatform is the top-level platform envelope: {"type":"GCP","gcp":{...}}.
 type GCPPlatform struct {
+	Type string    `json:"type"`
+	GCP  GCPConfig `json:"gcp"`
+}
+
+// GCPConfig holds the GCP-specific cluster platform fields nested under "gcp".
+type GCPConfig struct {
 	ProjectID        string    `json:"projectID"`
 	Region           string    `json:"region"`
 	Network          string    `json:"network"`
@@ -73,8 +79,14 @@ type NodePoolSpec struct {
 	Platform NodePoolGCPPlatform `json:"platform"`
 }
 
-// NodePoolGCPPlatform holds GCP-specific node pool platform fields.
+// NodePoolGCPPlatform is the top-level nodepool platform envelope: {"type":"GCP","gcp":{...}}.
 type NodePoolGCPPlatform struct {
+	Type string          `json:"type"`
+	GCP  NodePoolGCPConf `json:"gcp"`
+}
+
+// NodePoolGCPConf holds the GCP-specific node pool platform fields nested under "gcp".
+type NodePoolGCPConf struct {
 	ProjectID string `json:"projectID"`
 	Region    string `json:"region"`
 	Zone      string `json:"zone,omitempty"` // optional; falls back to region+"-a" in templates

@@ -46,21 +46,24 @@ func clusterDetail(name string, conditions []hyperfleetapi.Condition) hyperfleet
 			ClusterID: "550e8400-e29b-41d4-a716-446655440000",
 			Release:   hyperfleetapi.ReleaseSpec{Version: "4.15.0"},
 			Platform: hyperfleetapi.GCPPlatform{
-				ProjectID: "my-project",
-				Region:    "us-central1",
-				Network:   "my-vpc",
-				Subnet:    "my-subnet",
-				WorkloadIdentity: hyperfleetapi.WIFConfig{
-					ProjectNumber: "12345",
-					PoolID:        "pool",
-					ProviderID:    "provider",
-					ServiceAccountsRef: hyperfleetapi.WIFServiceAccounts{
-						NodePool:        "np@sa.iam.gserviceaccount.com",
-						ControlPlane:    "cp@sa.iam.gserviceaccount.com",
-						CloudController: "cc@sa.iam.gserviceaccount.com",
-						Storage:         "st@sa.iam.gserviceaccount.com",
-						ImageRegistry:   "ir@sa.iam.gserviceaccount.com",
-						Network:         "nw@sa.iam.gserviceaccount.com",
+				Type: "GCP",
+				GCP: hyperfleetapi.GCPConfig{
+					ProjectID: "my-project",
+					Region:    "us-central1",
+					Network:   "my-vpc",
+					Subnet:    "my-subnet",
+					WorkloadIdentity: hyperfleetapi.WIFConfig{
+						ProjectNumber: "12345",
+						PoolID:        "pool",
+						ProviderID:    "provider",
+						ServiceAccountsRef: hyperfleetapi.WIFServiceAccounts{
+							NodePool:        "np@sa.iam.gserviceaccount.com",
+							ControlPlane:    "cp@sa.iam.gserviceaccount.com",
+							CloudController: "cc@sa.iam.gserviceaccount.com",
+							Storage:         "st@sa.iam.gserviceaccount.com",
+							ImageRegistry:   "ir@sa.iam.gserviceaccount.com",
+							Network:         "nw@sa.iam.gserviceaccount.com",
+						},
 					},
 				},
 			},
@@ -130,7 +133,7 @@ func TestReconcile_HappyPath(t *testing.T) {
 		"/api/hyperfleet/v1/clusters/" + clusterID + "/statuses": func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodGet:
-				jsonResponse(t, w, statuses)
+				jsonResponse(t, w, map[string]any{"items": statuses})
 			case http.MethodPut:
 				putCalled = true
 				w.WriteHeader(http.StatusNoContent)
@@ -194,7 +197,7 @@ func TestReconcile_DependenciesNotReady_NoPlacement(t *testing.T) {
 		},
 		"/api/hyperfleet/v1/clusters/" + clusterID + "/statuses": func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet {
-				jsonResponse(t, w, statusesNoPlacement)
+				jsonResponse(t, w, map[string]any{"items": statusesNoPlacement})
 			}
 		},
 	})
@@ -229,7 +232,7 @@ func TestReconcile_DependenciesNotReady_VRVersionMismatch(t *testing.T) {
 		},
 		"/api/hyperfleet/v1/clusters/" + clusterID + "/statuses": func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet {
-				jsonResponse(t, w, statusesWrongVR)
+				jsonResponse(t, w, map[string]any{"items": statusesWrongVR})
 			}
 		},
 	})

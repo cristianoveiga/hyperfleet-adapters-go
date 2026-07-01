@@ -70,9 +70,9 @@ func buildTestServer(
 			}
 			writeJSON(w, http.StatusOK, cluster)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/hyperfleet/v1/clusters/"+np.ClusterID+"/statuses":
-			writeJSON(w, http.StatusOK, clusterStatuses)
+			writeJSON(w, http.StatusOK, map[string]any{"items": clusterStatuses})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/hyperfleet/v1/nodepools/"+np.ID+"/statuses":
-			writeJSON(w, http.StatusOK, nodepoolStatuses)
+			writeJSON(w, http.StatusOK, map[string]any{"items": nodepoolStatuses})
 		case r.Method == http.MethodPut && r.URL.Path == "/api/hyperfleet/v1/nodepools/"+np.ID+"/statuses":
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -124,9 +124,12 @@ func testNodePool(specVersion string) *hyperfleetapi.NodePoolDetail {
 		Spec: hyperfleetapi.NodePoolSpec{
 			Release: hyperfleetapi.ReleaseSpec{Version: specVersion},
 			Platform: hyperfleetapi.NodePoolGCPPlatform{
-				ProjectID: "my-project",
-				Region:    "us-central1",
-				Zone:      "us-central1-b",
+				Type: "GCP",
+				GCP: hyperfleetapi.NodePoolGCPConf{
+					ProjectID: "my-project",
+					Region:    "us-central1",
+					Zone:      "us-central1-b",
+				},
 			},
 		},
 	}
@@ -138,8 +141,11 @@ func testCluster() *hyperfleetapi.ClusterDetail {
 		Name: "my-cluster",
 		Spec: hyperfleetapi.ClusterSpec{
 			Platform: hyperfleetapi.GCPPlatform{
-				Subnet: "my-subnet",
-				Region: "us-central1",
+				Type: "GCP",
+				GCP: hyperfleetapi.GCPConfig{
+					Subnet: "my-subnet",
+					Region: "us-central1",
+				},
 			},
 		},
 	}
@@ -162,9 +168,9 @@ func TestReconcile_HappyPath(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/hyperfleet/v1/clusters/"+np.ClusterID:
 			writeJSON(w, http.StatusOK, cluster)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/hyperfleet/v1/clusters/"+np.ClusterID+"/statuses":
-			writeJSON(w, http.StatusOK, clusterStatuses)
+			writeJSON(w, http.StatusOK, map[string]any{"items": clusterStatuses})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/hyperfleet/v1/nodepools/"+np.ID+"/statuses":
-			writeJSON(w, http.StatusOK, nodepoolStatuses)
+			writeJSON(w, http.StatusOK, map[string]any{"items": nodepoolStatuses})
 		case r.Method == http.MethodPut && r.URL.Path == "/api/hyperfleet/v1/nodepools/"+np.ID+"/statuses":
 			putCalled = true
 			w.WriteHeader(http.StatusOK)

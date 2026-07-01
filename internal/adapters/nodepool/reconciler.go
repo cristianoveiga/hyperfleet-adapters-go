@@ -101,9 +101,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, nodepoolID string) (common.R
 	}
 
 	// Step 6: Build ManifestWork
-	zone := np.Spec.Platform.Zone
+	zone := np.Spec.Platform.GCP.Zone
 	if zone == "" {
-		zone = np.Spec.Platform.Region + "-a"
+		zone = np.Spec.Platform.GCP.Region + "-a"
 	}
 
 	_ = cluster // cluster fetched for validation; subnet/region come from nodepool spec
@@ -116,9 +116,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, nodepoolID string) (common.R
 		ClusterName:        cluster.Name,
 		Replicas:           defaultReplicas,
 		MachineType:        manifest.DefaultMachineType,
-		GCPRegion:          np.Spec.Platform.Region,
+		GCPRegion:          np.Spec.Platform.GCP.Region,
 		Zone:               zone,
-		GCPSubnet:          cluster.Spec.Platform.Subnet,
+		GCPSubnet:          cluster.Spec.Platform.GCP.Subnet,
 		DiskSizeGB:         manifest.DefaultDiskSizeGB,
 		DiskType:           manifest.DefaultDiskType,
 		ReleaseImage:       nodepoolVR.ReleaseImage,
