@@ -187,11 +187,13 @@ func (c *HTTPClient) GetCluster(ctx context.Context, clusterID string) (*Cluster
 
 // GetClusterStatuses fetches all adapter statuses for a cluster.
 func (c *HTTPClient) GetClusterStatuses(ctx context.Context, clusterID string) (AdapterStatuses, error) {
-	var statuses AdapterStatuses
-	if err := c.get(ctx, fmt.Sprintf("/clusters/%s/statuses", clusterID), &statuses); err != nil {
+	var page struct {
+		Items AdapterStatuses `json:"items"`
+	}
+	if err := c.get(ctx, fmt.Sprintf("/clusters/%s/statuses", clusterID), &page); err != nil {
 		return nil, err
 	}
-	return statuses, nil
+	return page.Items, nil
 }
 
 // PutClusterStatus updates the adapter status for a cluster.
@@ -210,11 +212,13 @@ func (c *HTTPClient) GetNodePool(ctx context.Context, nodepoolID string) (*NodeP
 
 // GetNodePoolStatuses fetches all adapter statuses for a node pool.
 func (c *HTTPClient) GetNodePoolStatuses(ctx context.Context, nodepoolID string) (AdapterStatuses, error) {
-	var statuses AdapterStatuses
-	if err := c.get(ctx, fmt.Sprintf("/nodepools/%s/statuses", nodepoolID), &statuses); err != nil {
+	var page struct {
+		Items AdapterStatuses `json:"items"`
+	}
+	if err := c.get(ctx, fmt.Sprintf("/nodepools/%s/statuses", nodepoolID), &page); err != nil {
 		return nil, err
 	}
-	return statuses, nil
+	return page.Items, nil
 }
 
 // PutNodePoolStatus updates the adapter status for a node pool.
