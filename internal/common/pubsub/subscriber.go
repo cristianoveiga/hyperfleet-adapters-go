@@ -70,7 +70,19 @@ func (s *Subscriber) Run(ctx context.Context) {
 			return
 		}
 
-		resourceID := ce.ID()
+		var data struct {
+			ID string `json:"id"`
+		}
+		if err := ce.DataAs(&data); err != nil || data.ID == "" {
+			s.log.Errorw("CloudEvent missing resource id in data, discarding",
+				"msgID", msg.ID,
+				"eventID", ce.ID(),
+				"error", err,
+			)
+			msg.Ack()
+			return
+		}
+		resourceID := data.ID
 		s.log.Debugw("received CloudEvent, enqueuing resource",
 			"resourceID", resourceID,
 			"msgID", msg.ID,
