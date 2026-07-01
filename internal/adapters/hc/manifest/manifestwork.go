@@ -104,7 +104,7 @@ func Build(input Input) (*workv1.ManifestWork, error) {
 			DeleteOption: &workv1.DeleteOption{
 				PropagationPolicy: workv1.DeletePropagationPolicyTypeForeground,
 			},
-			ManifestConfigs: buildManifestConfigs(input.ClusterID, input.ClusterName, clusterNS, hcNS),
+			ManifestConfigs: buildManifestConfigs(input.ClusterID, input.ClusterName, clusterNS, hcNS, input.Generation),
 		},
 	}
 
@@ -172,9 +172,10 @@ func buildNamespace(input Input, clusterNS string) (workv1.Manifest, error) {
 		"metadata": map[string]any{
 			"name": clusterNS,
 			"labels": map[string]any{
-				"hyperfleet.io/cluster-id": input.ClusterID,
-				"hyperfleet.io/adapter":    "hc-adapter",
-				"hyperfleet.io/component":  "hosted-cluster",
+				"hyperfleet.io/cluster-id":   input.ClusterID,
+				"hyperfleet.io/cluster-name": input.ClusterName,
+				"hyperfleet.io/managed-by":   "hc-adapter",
+				"hyperfleet.io/resource-type": "namespace",
 			},
 			"annotations": map[string]any{
 				"hyperfleet.io/generation": genStr,
@@ -203,14 +204,16 @@ func buildExternalSecret(input Input, clusterNS string) (workv1.Manifest, error)
 				"kind": "ClusterSecretStore",
 			},
 			"target": map[string]any{
-				"name": "pull-secret",
+				"name":           "pull-secret",
+				"creationPolicy": "Owner",
 				"template": map[string]any{
 					"type": "kubernetes.io/dockerconfigjson",
 				},
 			},
-			"dataFrom": []any{
+			"data": []any{
 				map[string]any{
-					"extract": map[string]any{
+					"secretKey": ".dockerconfigjson",
+					"remoteRef": map[string]any{
 						"key": input.PullSecretGCPKey,
 					},
 				},
@@ -229,18 +232,34 @@ func buildCertificate(input Input, clusterNS string) (workv1.Manifest, error) {
 		"metadata": map[string]any{
 			"name":      "external-api-cert",
 			"namespace": clusterNS,
+			"labels": map[string]any{
+				"hyperfleet.io/cluster-id":    input.ClusterID,
+				"hyperfleet.io/managed-by":    "hc-adapter",
+				"hyperfleet.io/resource-type": "certificate",
+			},
 			"annotations": map[string]any{
 				"hyperfleet.io/generation": genStr,
 			},
 		},
 		"spec": map[string]any{
-			"secretName": "external-api-cert",
-			"dnsNames": []any{
-				dnsName,
+			"subject": map[string]any{
+				"organizations": []any{"Red Hat - Hypershift"},
 			},
+			"usages":      []any{"server auth", "client auth"},
+			"duration":    "2160h",
+			"renewBefore": "720h",
+			"privateKey": map[string]any{
+				"algorithm":      "RSA",
+				"encoding":       "PKCS1",
+				"size":           2048,
+				"rotationPolicy": "Always",
+			},
+			"dnsNames":   []any{dnsName},
+			"secretName": "external-api-cert",
 			"issuerRef": map[string]any{
-				"name": "letsencrypt",
-				"kind": "ClusterIssuer",
+				"name":  "public-issuer",
+				"kind":  "ClusterIssuer",
+				"group": "cert-manager.io",
 			},
 		},
 	}
@@ -254,12 +273,14 @@ func buildHostedCluster(input Input, clusterNS string) (workv1.Manifest, error) 
 
 	annotations := map[string]any{
 		"hyperfleet.io/generation": genStr,
+		"hypershift.openshift.io/pod-security-admission-label-override": "baseline",
+		"hypershift.openshift.io/skip-kas-conflict-san-validation":      "true",
 	}
 	if input.CPOImage != "" {
 		annotations["hypershift.openshift.io/control-plane-operator-image"] = input.CPOImage
 	}
 	if input.CAPGImage != "" {
-		annotations["hypershift.openshift.io/cluster-api-provider-gcp-image"] = input.CAPGImage
+		annotations["hypershift.openshift.io/capi-provider-gcp-image"] = input.CAPGImage
 	}
 
 	obj := map[string]any{
@@ -269,18 +290,27 @@ func buildHostedCluster(input Input, clusterNS string) (workv1.Manifest, error) 
 			"name":      input.ClusterName,
 			"namespace": clusterNS,
 			"labels": map[string]any{
-				"hyperfleet.io/cluster-id": input.ClusterID,
+				"hyperfleet.io/cluster-id":    input.ClusterID,
+				"hyperfleet.io/managed-by":    "hc-adapter",
+				"hyperfleet.io/resource-type": "hosted-cluster",
 			},
 			"annotations": annotations,
 		},
 		"spec": map[string]any{
-			"clusterID":   input.ClusterIDUUID,
-			"infraID":     input.InfraID,
-			"issuerURL":   input.IssuerURL,
-			"releaseImage": input.ReleaseImage,
+			"clusterID": input.ClusterIDUUID,
+			"infraID":   input.InfraID,
+			"issuerURL": input.IssuerURL,
+			"release": map[string]any{
+				"image": input.ReleaseImage,
+			},
+			"channel":                      input.ReleaseChannel,
 			"controllerAvailabilityPolicy": input.ControllerAvailabilityPolicy,
 			"pullSecret": map[string]any{
 				"name": "pull-secret",
+			},
+			"dns": map[string]any{
+				"baseDomain":       fmt.Sprintf("in.%s-%s.%s", input.ClusterName, input.Slug, input.BaseDomain),
+				"baseDomainPrefix": "",
 			},
 			"networking": map[string]any{
 				"clusterNetwork": []any{
@@ -294,22 +324,28 @@ func buildHostedCluster(input Input, clusterNS string) (workv1.Manifest, error) 
 			"platform": map[string]any{
 				"type": "GCP",
 				"gcp": map[string]any{
-					"projectID":      input.GCPProjectID,
-					"region":         input.GCPRegion,
-					"network":        input.GCPNetwork,
-					"subnet":         input.GCPSubnet,
+					"project": input.GCPProjectID,
+					"region":  input.GCPRegion,
+					"networkConfig": map[string]any{
+						"network": map[string]any{
+							"name": input.GCPNetwork,
+						},
+						"privateServiceConnectSubnet": map[string]any{
+							"name": input.GCPSubnet,
+						},
+					},
 					"endpointAccess": input.GCPEndpointAccess,
 					"workloadIdentity": map[string]any{
 						"projectNumber": input.WIFProjectNumber,
 						"poolID":        input.WIFPoolID,
 						"providerID":    input.WIFProviderID,
-						"serviceAccountsRef": map[string]any{
-							"nodePoolEmail":        input.NodePoolEmail,
-							"controlPlaneEmail":    input.ControlPlaneEmail,
-							"cloudControllerEmail": input.CloudControllerEmail,
-							"storageEmail":         input.StorageEmail,
-							"imageRegistryEmail":   input.ImageRegistryEmail,
-							"networkEmail":         input.NetworkEmail,
+						"serviceAccountsEmails": map[string]any{
+							"nodePool":        input.NodePoolEmail,
+							"controlPlane":    input.ControlPlaneEmail,
+							"cloudController": input.CloudControllerEmail,
+							"storage":         input.StorageEmail,
+							"imageRegistry":   input.ImageRegistryEmail,
+							"network":         input.NetworkEmail,
 						},
 					},
 				},
@@ -402,19 +438,49 @@ func buildRBACJob(input Input, hcNS string) (workv1.Manifest, error) {
 	backoffLimit := int32(10)
 	activeDeadline := int64(1800)
 	clusterAdminScript := fmt.Sprintf(`set -euo pipefail
-# Wait for API server (up to 25 minutes)
-for i in $(seq 1 150); do
-  if oc --kubeconfig /etc/kubeconfig/kubeconfig get namespace 2>/dev/null; then
+
+echo "Waiting for API server to be fully ready (up to 25 minutes)..."
+ATTEMPTS=0
+MAX_ATTEMPTS=150
+
+while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+  if kubectl --kubeconfig=/kubeconfig/kubeconfig get --raw /healthz &>/dev/null; then
+    echo "API server is ready after $((ATTEMPTS * 10)) seconds"
     break
   fi
-  echo "Waiting for API server... attempt $i"
+  ATTEMPTS=$((ATTEMPTS + 1))
+  echo "Attempt $ATTEMPTS/$MAX_ATTEMPTS: API server not ready yet, waiting 10s..."
   sleep 10
 done
 
-oc --kubeconfig /etc/kubeconfig/kubeconfig create clusterrolebinding hyperfleet-admins \
-  --clusterrole=cluster-admin \
-  --group=redhat.com \
-  --user=%s || true
+if [ $ATTEMPTS -eq $MAX_ATTEMPTS ]; then
+  echo "ERROR: API server did not become ready after $((MAX_ATTEMPTS * 10)) seconds"
+  exit 1
+fi
+
+echo "Creating ClusterRoleBinding for redhat.com domain..."
+kubectl --kubeconfig=/kubeconfig/kubeconfig apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: redhat-domain-admins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: redhat.com
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: "%s"
+EOF
+
+echo "ClusterRoleBinding created successfully"
+
+echo "Verifying ClusterRoleBinding..."
+kubectl --kubeconfig=/kubeconfig/kubeconfig get clusterrolebinding redhat-domain-admins -o yaml
 `, input.CreatedBy)
 
 	obj := map[string]any{
@@ -423,6 +489,12 @@ oc --kubeconfig /etc/kubeconfig/kubeconfig create clusterrolebinding hyperfleet-
 		"metadata": map[string]any{
 			"name":      jobName,
 			"namespace": hcNS,
+			"labels": map[string]any{
+				"hyperfleet.io/cluster-id":    input.ClusterID,
+				"hyperfleet.io/managed-by":    "hc-adapter",
+				"hyperfleet.io/resource-type": "rbac-setup",
+				"job":                         "rbac-setup",
+			},
 			"annotations": map[string]any{
 				"hyperfleet.io/generation": genStr,
 			},
@@ -432,18 +504,24 @@ oc --kubeconfig /etc/kubeconfig/kubeconfig create clusterrolebinding hyperfleet-
 			"backoffLimit":            backoffLimit,
 			"activeDeadlineSeconds":   activeDeadline,
 			"template": map[string]any{
+				"metadata": map[string]any{
+					"labels": map[string]any{
+						"job":                      "rbac-setup",
+						"hyperfleet.io/cluster-id": input.ClusterID,
+					},
+				},
 				"spec": map[string]any{
 					"serviceAccountName": "default",
 					"restartPolicy":      "OnFailure",
 					"containers": []any{
 						map[string]any{
-							"name":    "rbac-setup",
+							"name":    "oc",
 							"image":   "quay.io/openshift/origin-cli:4.20",
 							"command": []any{"/bin/bash", "-c", clusterAdminScript},
 							"volumeMounts": []any{
 								map[string]any{
 									"name":      "kubeconfig",
-									"mountPath": "/etc/kubeconfig",
+									"mountPath": "/kubeconfig",
 									"readOnly":  true,
 								},
 							},
@@ -453,7 +531,8 @@ oc --kubeconfig /etc/kubeconfig/kubeconfig create clusterrolebinding hyperfleet-
 						map[string]any{
 							"name": "kubeconfig",
 							"secret": map[string]any{
-								"secretName": "service-network-admin-kubeconfig",
+								"secretName":  "service-network-admin-kubeconfig",
+								"defaultMode": 0600,
 							},
 						},
 					},
@@ -464,11 +543,7 @@ oc --kubeconfig /etc/kubeconfig/kubeconfig create clusterrolebinding hyperfleet-
 	return toManifest(obj)
 }
 
-func buildManifestConfigs(clusterID, clusterName, clusterNS, hcNS string) []workv1.ManifestConfigOption {
-	mwName := fmt.Sprintf("%s-hc-adapter", clusterID)
-	_ = mwName
-	_ = hcNS
-
+func buildManifestConfigs(clusterID, clusterName, clusterNS, hcNS string, generation int64) []workv1.ManifestConfigOption {
 	ssaStrategy := &workv1.UpdateStrategy{
 		Type: workv1.UpdateStrategyTypeServerSideApply,
 	}
@@ -501,7 +576,7 @@ func buildManifestConfigs(clusterID, clusterName, clusterNS, hcNS string) []work
 			ResourceIdentifier: workv1.ResourceIdentifier{
 				Group:     "batch",
 				Resource:  "jobs",
-				Name:      fmt.Sprintf("rbac-setup-gen-%d", 0), // placeholder; actual name varies
+				Name:      fmt.Sprintf("rbac-setup-gen-%d", generation),
 				Namespace: hcNS,
 			},
 			UpdateStrategy: createOnlyStrategy,

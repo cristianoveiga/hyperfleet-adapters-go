@@ -84,7 +84,9 @@ func TestBuild_HostedClusterReleaseImage(t *testing.T) {
 
 	spec, ok := obj["spec"].(map[string]any)
 	require.True(t, ok, "HostedCluster missing spec")
-	require.Equal(t, input.ReleaseImage, spec["releaseImage"])
+	release, ok := spec["release"].(map[string]any)
+	require.True(t, ok, "HostedCluster spec missing release")
+	require.Equal(t, input.ReleaseImage, release["image"])
 }
 
 func TestBuild_JobName(t *testing.T) {
