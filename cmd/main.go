@@ -9,6 +9,7 @@ import (
 	"time"
 
 	gogopubsub "cloud.google.com/go/pubsub/v2"
+	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	"k8s.io/client-go/util/workqueue"
@@ -229,6 +230,7 @@ func newNodepoolVRCmd(rf *rootFlags) *cobra.Command {
 func newPlacementCmd(rf *rootFlags) *cobra.Command {
 	psf := &pubsubFlags{}
 	var candidateNames, baseDomains []string
+	var smProject, maestroHTTPAddr string
 
 	cmd := &cobra.Command{
 		Use:   "placement",
@@ -236,6 +238,12 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if v := envOr("PUBSUB_PROJECT", ""); v != "" && !cmd.Flags().Changed("pubsub-project") {
 				psf.pubsubProject = v
+			}
+			if v := envOr("SECRETMANAGER_PROJECT", ""); v != "" && !cmd.Flags().Changed("secretmanager-project") {
+				smProject = v
+			}
+			if v := envOr("MAESTRO_HTTP_ADDR", ""); v != "" && !cmd.Flags().Changed("maestro-http-addr") {
+				maestroHTTPAddr = v
 			}
 
 			ctx := cmd.Context()
@@ -245,18 +253,32 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 				return fmt.Errorf("create logger: %w", err)
 			}
 
-			// Build []Candidate by pairing candidateNames[i] with baseDomains[i].
-			candidates := make([]placementadapter.Candidate, 0, len(candidateNames))
-			for i, name := range candidateNames {
-				c := placementadapter.Candidate{Name: name}
-				if i < len(baseDomains) {
-					c.BaseDomains = []string{baseDomains[i]}
+			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
+
+			var selector placementadapter.Selector
+			var candidates []placementadapter.Candidate
+
+			if smProject != "" {
+				// Dynamic mode: discover MCs and DNS zones from Secret Manager + Maestro.
+				smClient, err := secretmanager.NewClient(ctx)
+				if err != nil {
+					return fmt.Errorf("create secret manager client: %w", err)
 				}
-				candidates = append(candidates, c)
+				defer smClient.Close() //nolint:errcheck
+				selector = placementadapter.NewDynamicSelector(smClient, smProject, maestroHTTPAddr)
+			} else {
+				// Static mode: use explicitly provided --candidates / --base-domains.
+				candidates = make([]placementadapter.Candidate, 0, len(candidateNames))
+				for i, name := range candidateNames {
+					c := placementadapter.Candidate{Name: name}
+					if i < len(baseDomains) {
+						c.BaseDomains = []string{baseDomains[i]}
+					}
+					candidates = append(candidates, c)
+				}
+				selector = placementadapter.NewRoundRobinSelector()
 			}
 
-			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
-			selector := placementadapter.NewRoundRobinSelector()
 			rec := placementadapter.NewReconciler(hfClient, selector, candidates, log)
 
 			q := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
@@ -277,8 +299,10 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 
 	cmd.Flags().StringVar(&psf.pubsubProject, "pubsub-project", "", "GCP project for Pub/Sub [$PUBSUB_PROJECT]")
 	cmd.Flags().StringVar(&psf.subscription, "subscription", "hyperfleet-cluster-events-placement-adapter", "Pub/Sub subscription name")
-	cmd.Flags().StringSliceVar(&candidateNames, "candidates", nil, "Management cluster names (comma-separated)")
-	cmd.Flags().StringSliceVar(&baseDomains, "base-domains", nil, "Base domains per MC, paired with --candidates")
+	cmd.Flags().StringSliceVar(&candidateNames, "candidates", nil, "MC names (comma-separated); ignored when --secretmanager-project is set")
+	cmd.Flags().StringSliceVar(&baseDomains, "base-domains", nil, "Base domains per MC, paired with --candidates; ignored when --secretmanager-project is set")
+	cmd.Flags().StringVar(&smProject, "secretmanager-project", "", "GCP project for Secret Manager MC/DNS discovery [$SECRETMANAGER_PROJECT]; enables dynamic selector")
+	cmd.Flags().StringVar(&maestroHTTPAddr, "maestro-http-addr", "http://maestro.hyperfleet.svc.cluster.local:8000", "Maestro HTTP API URL for consumer discovery [$MAESTRO_HTTP_ADDR]")
 
 	return cmd
 }
