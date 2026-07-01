@@ -101,6 +101,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, nodepoolID string) (common.R
 				Reason:  "ReleaseImageAvailable",
 				Message: fmt.Sprintf("Release image available: %s", info.Payload),
 			},
+			{
+				Type:    "Health",
+				Status:  "True",
+				Reason:  "VersionResolved",
+				Message: fmt.Sprintf("Version %s resolved", version),
+			},
 		},
 		Data: map[string]any{
 			"release_image":         info.Payload,

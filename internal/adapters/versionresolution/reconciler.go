@@ -105,6 +105,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 				Reason:  "VersionResolved",
 				Message: fmt.Sprintf("Version %s resolved", version),
 			},
+			{
+				Type:    "Health",
+				Status:  "True",
+				Reason:  "VersionResolved",
+				Message: fmt.Sprintf("Version %s resolved", version),
+			},
 		},
 		Data: map[string]any{
 			"release_image":         info.Payload,

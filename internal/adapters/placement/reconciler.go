@@ -94,6 +94,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 				Reason:  "PlacementReady",
 				Message: fmt.Sprintf("Management cluster: %s, base domain: %s", mc, domain),
 			},
+			{
+				Type:    "Health",
+				Status:  "True",
+				Reason:  "PlacementReady",
+				Message: fmt.Sprintf("Management cluster: %s, base domain: %s", mc, domain),
+			},
 		},
 		Data: map[string]any{
 			"managementClusterName": mc,
