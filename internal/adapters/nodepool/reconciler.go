@@ -62,18 +62,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, e
 	}
 
 	// Step 2: GET cluster
-	cluster, err := r.api.GetCluster(ctx, np.ClusterID)
+	cluster, err := r.api.GetCluster(ctx, clusterID)
 	if err != nil {
 		var nfe *hyperfleetapi.NotFoundError
 		if errors.As(err, &nfe) {
-			log.Infof(ctx, "cluster %s not found for nodepool %s, skipping", np.ClusterID, nodepoolID)
+			log.Infof(ctx, "cluster %s not found for nodepool %s, skipping", clusterID, nodepoolID)
 			return common.Result{}, nil
 		}
 		return common.Result{}, fmt.Errorf("nodepool reconciler: get cluster: %w", err)
 	}
 
 	// Step 3: GET cluster statuses
-	clusterStatuses, err := r.api.GetClusterStatuses(ctx, np.ClusterID)
+	clusterStatuses, err := r.api.GetClusterStatuses(ctx, clusterID)
 	if err != nil {
 		return common.Result{}, fmt.Errorf("nodepool reconciler: get cluster statuses: %w", err)
 	}
@@ -120,7 +120,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, e
 		NodePoolID:         nodepoolID,
 		NodePoolName:       np.Name,
 		NodePoolGeneration: np.Generation,
-		ClusterID:          np.ClusterID,
+		ClusterID:          clusterID,
 		ClusterName:        cluster.Name,
 		Replicas:           defaultReplicas,
 		MachineType:        manifest.DefaultMachineType,
