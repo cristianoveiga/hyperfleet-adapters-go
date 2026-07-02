@@ -89,7 +89,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 		CreatedBy:                    cluster.CreatedBy,
 		InfraID:                      cluster.Spec.InfraID,
 		IssuerURL:                    cluster.Spec.IssuerURL,
-		ClusterIDUUID:                cluster.Spec.ClusterID,
+		ClusterIDUUID:                cluster.ID,
 		GCPProjectID:                 cluster.Spec.Platform.GCP.ProjectID,
 		GCPRegion:                    cluster.Spec.Platform.GCP.Region,
 		GCPNetwork:                   cluster.Spec.Platform.GCP.Network,
