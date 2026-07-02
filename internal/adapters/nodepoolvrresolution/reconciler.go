@@ -58,7 +58,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, e
 	// Step 2: If version is empty, wait for it to be set.
 	version := np.Spec.Release.Version
 	if version == "" {
-		r.log.Infof(ctx, "nodepool-vr: nodepool %s: release version not set, waiting for Sentinel", nodepoolID)
+		r.log.Infof(ctx, "nodepool-vr: nodepool %s: release version not set, waiting for next event", nodepoolID)
 		return common.Result{}, nil
 	}
 
@@ -85,7 +85,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, e
 		return common.Result{}, fmt.Errorf("nodepool-vr: cincinnati resolve for nodepool %s: %w", nodepoolID, err)
 	}
 	if info == nil {
-		r.log.Warnf(ctx, "nodepool-vr: nodepool %s: version %s not found in Cincinnati, waiting for Sentinel", nodepoolID, version)
+		r.log.Warnf(ctx, "nodepool-vr: nodepool %s: version %s not found in Cincinnati, waiting for next event", nodepoolID, version)
 		return common.Result{}, nil
 	}
 

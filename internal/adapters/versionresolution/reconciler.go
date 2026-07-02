@@ -58,7 +58,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 	// Step 3: If version is empty, wait for it to be set.
 	version := cluster.Spec.Release.Version
 	if version == "" {
-		r.log.Infof(ctx, "vr: cluster %s: release version not set, waiting for Sentinel", clusterID)
+		r.log.Infof(ctx, "vr: cluster %s: release version not set, waiting for next event", clusterID)
 		return common.Result{}, nil
 	}
 
@@ -82,7 +82,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 		return common.Result{}, fmt.Errorf("vr: cincinnati resolve for cluster %s: %w", clusterID, err)
 	}
 	if info == nil {
-		r.log.Warnf(ctx, "vr: cluster %s: version %s not found in Cincinnati, waiting for Sentinel", clusterID, version)
+		r.log.Warnf(ctx, "vr: cluster %s: version %s not found in Cincinnati, waiting for next event", clusterID, version)
 		return common.Result{}, nil
 	}
 

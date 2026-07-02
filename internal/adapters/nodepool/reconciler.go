@@ -90,19 +90,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, e
 	nodepoolVR := nodepoolStatuses.NodePoolVR()
 
 	if !placement.Ready() {
-		log.Infof(ctx, "placement not ready for nodepool %s, waiting for Sentinel", nodepoolID)
+		log.Infof(ctx, "placement not ready for nodepool %s, waiting for next event", nodepoolID)
 		return common.Result{}, nil
 	}
 	if !hc.Available() {
-		log.Infof(ctx, "hc-adapter not available for nodepool %s, waiting for Sentinel", nodepoolID)
+		log.Infof(ctx, "hc-adapter not available for nodepool %s, waiting for next event", nodepoolID)
 		return common.Result{}, nil
 	}
 	if !nodepoolVR.Ready() {
-		log.Infof(ctx, "nodepool VR not ready for nodepool %s, waiting for Sentinel", nodepoolID)
+		log.Infof(ctx, "nodepool VR not ready for nodepool %s, waiting for next event", nodepoolID)
 		return common.Result{}, nil
 	}
 	if nodepoolVR.ReleaseVersion != np.Spec.Release.Version {
-		log.Infof(ctx, "nodepool VR version %q does not match spec version %q for nodepool %s, waiting for Sentinel",
+		log.Infof(ctx, "nodepool VR version %q does not match spec version %q for nodepool %s, waiting for next event",
 
 			nodepoolVR.ReleaseVersion, np.Spec.Release.Version, nodepoolID)
 		return common.Result{}, nil

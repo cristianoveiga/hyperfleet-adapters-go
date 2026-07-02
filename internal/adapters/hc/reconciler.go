@@ -75,7 +75,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 	vr := statuses.VersionResolution()
 
 	if !placement.Ready() || !vr.Ready() || vr.ReleaseVersion != cluster.Spec.Release.Version {
-		log.Infof(ctx, "dependencies not ready (placement=%v, vr=%v), waiting for Sentinel",
+		log.Infof(ctx, "dependencies not ready (placement=%v, vr=%v), waiting for next event",
 			placement.Ready(), vr.Ready())
 		return common.Result{}, nil
 	}
