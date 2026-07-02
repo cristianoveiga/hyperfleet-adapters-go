@@ -69,10 +69,6 @@ func runWorker(
 		}
 
 		if result.RequeueAfter > 0 {
-			log.Infow("reconcile succeeded, requeuing",
-				"resourceID", id,
-				"requeueAfter", result.RequeueAfter,
-			)
 			queue.AddAfter(id, result.RequeueAfter)
 		}
 
