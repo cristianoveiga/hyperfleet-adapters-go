@@ -47,12 +47,12 @@ Each adapter follows the same reconciliation loop:
 ### Pipeline order
 
 ```
-version-resolution ──┐
-                      ├──▶ placement ──▶ hc ──▶ nodepool
-nodepool-vr ─────────┘
+version-resolution ──▶ placement ──▶ hc ──┐
+                                           ├──▶ nodepool
+nodepool-vr ───────────────────────────────┘
 ```
 
-The `hc` adapter waits for both `placement` and `version-resolution` to report ready before proceeding. The `nodepool` adapter waits for `hc` to be available.
+The `hc` adapter gates on `placement` and `version-resolution`. The `nodepool` adapter gates on `placement`, `hc` (must be available), and `nodepool-vr`.
 
 ## Development
 
