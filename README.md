@@ -10,7 +10,7 @@ The previous adapter framework drove reconciliation through YAML configuration a
 
 **Compiled binary eliminates the runtime failure surface.** Field name typos, missing map keys, and type mismatches that the YAML/CEL interpreter silently ignores are compile errors in Go. The entire class of "wrong field name in the generated manifest" bugs cannot ship.
 
-**Pluggable transport interface.** `transport.Client` (Apply / GetStatus / Delete) is a clean interface. Swapping Maestro for a Firestore-based transport is a one-flag change — reconcilers are unchanged. This directly enables the planned Firestore transport without touching adapter logic.
+**Pluggable transport interface.** `transport.Client` (Apply / GetStatus / Delete) is a clean interface injected into each reconciler. Adding a Firestore transport requires implementing the interface and wiring a `--transport` flag in `cmd/main.go` — reconciler logic is unchanged. The seam is already in the right place.
 
 **Kubernetes controller pattern.** Each adapter uses `k8s.io/client-go`'s rate-limiting workqueue — the same infrastructure Kubernetes itself uses for controllers. Multiple Pub/Sub events for the same cluster collapse into a single reconcile, retries use exponential backoff automatically, and concurrency is controlled without custom locking. This is battle-tested infrastructure rather than bespoke queueing logic.
 
