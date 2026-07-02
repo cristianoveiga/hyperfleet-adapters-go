@@ -2,6 +2,20 @@
 
 Go implementation of the HyperFleet adapter pipeline. Five adapters run as independent processes, each subscribing to GCP Pub/Sub events and reconciling a specific aspect of an OpenShift hosted cluster's lifecycle.
 
+## Why Go (vs. the YAML/CEL pipeline)
+
+The previous adapter framework drove reconciliation through YAML configuration and CEL expressions. This repo replaces it with compiled Go. The four most consequential differences:
+
+**Typed, testable resource builders.** The ManifestWork builders (`manifest.Build()`) are pure functions that can be unit-tested without deploying anything. In the YAML pipeline, the exact manifest sent to Maestro could only be validated by running the full stack — wrong Hypershift field names and a missing `spec.clusterID` went undetected until the MC work-agent rejected them at apply time. A table-driven test on `manifest.Build()` catches those at `go test`.
+
+**Compiled binary eliminates the runtime failure surface.** Field name typos, missing map keys, and type mismatches that the YAML/CEL interpreter silently ignores are compile errors in Go. The entire class of "wrong field name in the generated manifest" bugs cannot ship.
+
+**Pluggable transport interface.** `transport.Client` (Apply / GetStatus / Delete) is a clean interface. Swapping Maestro for a Firestore-based transport is a one-flag change — reconcilers are unchanged. This directly enables the planned Firestore transport without touching adapter logic.
+
+**Kubernetes controller pattern.** Each adapter uses `k8s.io/client-go`'s rate-limiting workqueue — the same infrastructure Kubernetes itself uses for controllers. Multiple Pub/Sub events for the same cluster collapse into a single reconcile, retries use exponential backoff automatically, and concurrency is controlled without custom locking. This is battle-tested infrastructure rather than bespoke queueing logic.
+
+**Explicit, readable dependency gating.** Each reconciler's preconditions are ordinary Go code (`placement.Ready() && vr.Ready() && ...`) — readable in one place, testable with a mock API client, and debuggable with standard tooling. The equivalent in the YAML pipeline was CEL conditions and implicit stage ordering spread across multiple config files.
+
 ## Architecture
 
 ```
