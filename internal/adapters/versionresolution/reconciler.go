@@ -13,10 +13,9 @@ import (
 )
 
 const (
-	adapterName          = "version-resolution-adapter"
-	defaultChannelGroup  = "candidate"
-	requeueShort         = 30 * time.Second
-	requeueLong          = 5 * time.Minute
+	adapterName         = "version-resolution-adapter"
+	defaultChannelGroup = "candidate"
+	requeueLong         = 5 * time.Minute
 )
 
 // Reconciler resolves the OCP release image for a cluster via Cincinnati.
@@ -59,8 +58,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 	// Step 3: If version is empty, wait for it to be set.
 	version := cluster.Spec.Release.Version
 	if version == "" {
-		r.log.Infof(ctx, "vr: cluster %s: release version not set, requeueing in %s", clusterID, requeueShort)
-		return common.Result{RequeueAfter: requeueShort}, nil
+		r.log.Infof(ctx, "vr: cluster %s: release version not set, waiting for Sentinel", clusterID)
+		return common.Result{}, nil
 	}
 
 	// Step 4: GET /clusters/{id}/statuses and check if already resolved.
@@ -83,8 +82,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 		return common.Result{}, fmt.Errorf("vr: cincinnati resolve for cluster %s: %w", clusterID, err)
 	}
 	if info == nil {
-		r.log.Warnf(ctx, "vr: cluster %s: version %s not found in Cincinnati", clusterID, version)
-		return common.Result{RequeueAfter: requeueShort}, nil
+		r.log.Warnf(ctx, "vr: cluster %s: version %s not found in Cincinnati, waiting for Sentinel", clusterID, version)
+		return common.Result{}, nil
 	}
 
 	// Step 6: PUT /clusters/{id}/statuses

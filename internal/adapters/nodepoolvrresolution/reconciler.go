@@ -16,7 +16,6 @@ import (
 const (
 	adapterName         = "nodepool-vr-adapter"
 	defaultChannelGroup = "candidate"
-	requeueShort        = 30 * time.Second
 	requeueLong         = 5 * time.Minute
 )
 
@@ -59,8 +58,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, e
 	// Step 2: If version is empty, wait for it to be set.
 	version := np.Spec.Release.Version
 	if version == "" {
-		r.log.Infof(ctx, "nodepool-vr: nodepool %s: release version not set, requeueing in %s", nodepoolID, requeueShort)
-		return common.Result{RequeueAfter: requeueShort}, nil
+		r.log.Infof(ctx, "nodepool-vr: nodepool %s: release version not set, waiting for Sentinel", nodepoolID)
+		return common.Result{}, nil
 	}
 
 	// Step 3: GET /clusters/{clusterID}/nodepools/{nodepoolID}/statuses and check if already resolved.
@@ -86,8 +85,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, e
 		return common.Result{}, fmt.Errorf("nodepool-vr: cincinnati resolve for nodepool %s: %w", nodepoolID, err)
 	}
 	if info == nil {
-		r.log.Warnf(ctx, "nodepool-vr: nodepool %s: version %s not found in Cincinnati", nodepoolID, version)
-		return common.Result{RequeueAfter: requeueShort}, nil
+		r.log.Warnf(ctx, "nodepool-vr: nodepool %s: version %s not found in Cincinnati, waiting for Sentinel", nodepoolID, version)
+		return common.Result{}, nil
 	}
 
 	// Step 5: PUT /nodepools/{id}/statuses

@@ -246,7 +246,7 @@ func TestReconcile_NoPlacement(t *testing.T) {
 
 	result, err := r.Reconcile(context.Background(), np.ClusterID+"/"+np.ID)
 	require.NoError(t, err)
-	require.Equal(t, requeueNotReady, result.RequeueAfter)
+	require.Equal(t, time.Duration(0), result.RequeueAfter)
 	require.Empty(t, tr.ApplyCalls)
 }
 
@@ -286,7 +286,7 @@ func TestReconcile_HCNotAvailable(t *testing.T) {
 
 	result, err := r.Reconcile(context.Background(), np.ClusterID+"/"+np.ID)
 	require.NoError(t, err)
-	require.Equal(t, requeueNotReady, result.RequeueAfter)
+	require.Equal(t, time.Duration(0), result.RequeueAfter)
 	require.Empty(t, tr.ApplyCalls)
 }
 
@@ -307,7 +307,7 @@ func TestReconcile_NodePoolVRNotReady(t *testing.T) {
 
 	result, err := r.Reconcile(context.Background(), np.ClusterID+"/"+np.ID)
 	require.NoError(t, err)
-	require.Equal(t, requeueNotReady, result.RequeueAfter)
+	require.Equal(t, time.Duration(0), result.RequeueAfter)
 	require.Empty(t, tr.ApplyCalls)
 }
 
@@ -357,6 +357,6 @@ func TestReconcile_VRVersionMismatch(t *testing.T) {
 
 	result, err := r.Reconcile(context.Background(), np.ClusterID+"/"+np.ID)
 	require.NoError(t, err)
-	require.Equal(t, requeueNotReady, result.RequeueAfter)
+	require.Equal(t, time.Duration(0), result.RequeueAfter)
 	require.Empty(t, tr.ApplyCalls)
 }

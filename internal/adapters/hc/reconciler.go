@@ -19,8 +19,7 @@ import (
 const (
 	adapterName = "hc-adapter"
 
-	requeueReady      = 5 * time.Minute
-	requeueNotReady   = 30 * time.Second
+	requeueReady = 5 * time.Minute
 
 	// hostedClusterManifestIndex is the manifest index for the HostedCluster in the ManifestWork.
 	hostedClusterManifestIndex = 3
@@ -76,9 +75,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 	vr := statuses.VersionResolution()
 
 	if !placement.Ready() || !vr.Ready() || vr.ReleaseVersion != cluster.Spec.Release.Version {
-		log.Infof(ctx, "dependencies not ready (placement=%v, vr=%v), requeueing after %s",
-			placement.Ready(), vr.Ready(), requeueNotReady)
-		return common.Result{RequeueAfter: requeueNotReady}, nil
+		log.Infof(ctx, "dependencies not ready (placement=%v, vr=%v), waiting for Sentinel",
+			placement.Ready(), vr.Ready())
+		return common.Result{}, nil
 	}
 
 	// Step 5: Build ManifestWork.

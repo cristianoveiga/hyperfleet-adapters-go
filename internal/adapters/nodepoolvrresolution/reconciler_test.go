@@ -234,7 +234,7 @@ func TestReconciler_VersionNotInCincinnati(t *testing.T) {
 	result, err := r.Reconcile(context.Background(), "cluster-1/np-5")
 
 	require.NoError(t, err)
-	require.Equal(t, common.Result{RequeueAfter: requeueShort}, result)
+	require.Equal(t, common.Result{RequeueAfter: 0}, result)
 	require.Empty(t, mock.putCalls)
 }
 
@@ -259,7 +259,7 @@ func TestReconciler_EmptyVersion(t *testing.T) {
 	result, err := r.Reconcile(context.Background(), "cluster-1/np-6")
 
 	require.NoError(t, err)
-	require.Equal(t, common.Result{RequeueAfter: requeueShort}, result)
+	require.Equal(t, common.Result{RequeueAfter: 0}, result)
 	require.Empty(t, mock.putCalls)
 }
 

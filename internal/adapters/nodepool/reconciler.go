@@ -19,9 +19,8 @@ import (
 )
 
 const (
-	adapterName        = "nodepool-adapter"
-	requeueNotReady    = 30 * time.Second
-	requeueAfterApply  = 5 * time.Minute
+	adapterName       = "nodepool-adapter"
+	requeueAfterApply = 5 * time.Minute
 )
 
 // Reconciler implements the nodepool adapter reconciliation loop.
@@ -91,21 +90,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, e
 	nodepoolVR := nodepoolStatuses.NodePoolVR()
 
 	if !placement.Ready() {
-		log.Infof(ctx, "placement not ready for nodepool %s, requeueing", nodepoolID)
-		return common.Result{RequeueAfter: requeueNotReady}, nil
+		log.Infof(ctx, "placement not ready for nodepool %s, waiting for Sentinel", nodepoolID)
+		return common.Result{}, nil
 	}
 	if !hc.Available() {
-		log.Infof(ctx, "hc-adapter not available for nodepool %s, requeueing", nodepoolID)
-		return common.Result{RequeueAfter: requeueNotReady}, nil
+		log.Infof(ctx, "hc-adapter not available for nodepool %s, waiting for Sentinel", nodepoolID)
+		return common.Result{}, nil
 	}
 	if !nodepoolVR.Ready() {
-		log.Infof(ctx, "nodepool VR not ready for nodepool %s, requeueing", nodepoolID)
-		return common.Result{RequeueAfter: requeueNotReady}, nil
+		log.Infof(ctx, "nodepool VR not ready for nodepool %s, waiting for Sentinel", nodepoolID)
+		return common.Result{}, nil
 	}
 	if nodepoolVR.ReleaseVersion != np.Spec.Release.Version {
-		log.Infof(ctx, "nodepool VR version %q does not match spec version %q for nodepool %s, requeueing",
+		log.Infof(ctx, "nodepool VR version %q does not match spec version %q for nodepool %s, waiting for Sentinel",
+
 			nodepoolVR.ReleaseVersion, np.Spec.Release.Version, nodepoolID)
-		return common.Result{RequeueAfter: requeueNotReady}, nil
+		return common.Result{}, nil
 	}
 
 	// Step 6: Build ManifestWork
