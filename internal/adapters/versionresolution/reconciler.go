@@ -47,11 +47,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 		return common.Result{}, fmt.Errorf("vr: get cluster %s: %w", clusterID, err)
 	}
 
-	// Step 2: If cluster has Reconciled condition == "True", requeue slowly.
+	// Step 2: If cluster has Reconciled condition == "True", skip — Sentinel will re-trigger if needed.
 	for _, cond := range cluster.Status.Conditions {
 		if cond.Type == "Reconciled" && cond.Status == "True" {
-			r.log.Infof(ctx, "vr: cluster %s: already reconciled, requeueing in %s", clusterID, requeueLong)
-			return common.Result{RequeueAfter: requeueLong}, nil
+			r.log.Infof(ctx, "vr: cluster %s: already reconciled, waiting for next event", clusterID)
+			return common.Result{}, nil
 		}
 	}
 
@@ -69,8 +69,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 	}
 	vr := statuses.VersionResolution()
 	if vr.Ready() && vr.ReleaseVersion == version {
-		r.log.Infof(ctx, "vr: cluster %s: version %s already resolved, requeueing in %s", clusterID, version, requeueLong)
-		return common.Result{RequeueAfter: requeueLong}, nil
+		r.log.Infof(ctx, "vr: cluster %s: version %s already resolved, waiting for next event", clusterID, version)
+		return common.Result{}, nil
 	}
 
 	// Step 5: Resolve version via Cincinnati.

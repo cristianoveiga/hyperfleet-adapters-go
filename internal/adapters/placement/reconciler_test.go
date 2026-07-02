@@ -210,7 +210,7 @@ func TestReconciler(t *testing.T) {
 			},
 			selector:       &mockSelector{mcName: "mc-us-c1", baseDomain: "hc-us-central1-abc.example.com"},
 			expectPUT:      false,
-			expectedResult: common.Result{RequeueAfter: requeueAfter},
+			expectedResult: common.Result{},
 		},
 		{
 			name:           "cluster not found: return empty result, no error",
@@ -223,7 +223,7 @@ func TestReconciler(t *testing.T) {
 			expectError:    false,
 		},
 		{
-			name:      "reconciled cluster: skip, requeue",
+			name:      "reconciled cluster: skip, wait for next event",
 			clusterID: "cluster-3",
 			cluster: func() *hyperfleetapi.ClusterDetail {
 				c := testCluster("cluster-3", []hyperfleetapi.Condition{
@@ -234,7 +234,7 @@ func TestReconciler(t *testing.T) {
 			statuses:       hyperfleetapi.AdapterStatuses{},
 			selector:       &mockSelector{mcName: "mc-us-c1", baseDomain: "hc-us-central1-abc.example.com"},
 			expectPUT:      false,
-			expectedResult: common.Result{RequeueAfter: requeueAfter},
+			expectedResult: common.Result{},
 		},
 		{
 			name:      "selector error: return error",

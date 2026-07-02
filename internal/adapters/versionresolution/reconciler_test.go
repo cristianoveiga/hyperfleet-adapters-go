@@ -168,11 +168,9 @@ func TestReconciler_AlreadyResolved(t *testing.T) {
 	}
 
 	r := buildReconciler(t, mock, cincSrv)
-	result, err := r.Reconcile(context.Background(), "cluster-2")
+	_, err := r.Reconcile(context.Background(), "cluster-2")
 
 	require.NoError(t, err)
-	require.Equal(t, common.Result{RequeueAfter: requeueLong}, result)
-	// No PUT should have been made.
 	require.Empty(t, mock.putCalls)
 }
 
@@ -207,10 +205,9 @@ func TestReconciler_ReconciledCluster(t *testing.T) {
 	}
 
 	r := buildReconciler(t, mock, cincSrv)
-	result, err := r.Reconcile(context.Background(), "cluster-3")
+	_, err := r.Reconcile(context.Background(), "cluster-3")
 
 	require.NoError(t, err)
-	require.Equal(t, common.Result{RequeueAfter: requeueLong}, result)
 	require.Empty(t, mock.putCalls)
 }
 

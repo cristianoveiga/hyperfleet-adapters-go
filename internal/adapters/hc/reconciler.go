@@ -59,8 +59,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 	// Step 2: Skip if already reconciled (Reconciled condition == "True").
 	for _, cond := range cluster.Status.Conditions {
 		if cond.Type == "Reconciled" && cond.Status == "True" {
-			log.Infof(ctx, "cluster already reconciled, requeueing after %s", requeueReady)
-			return common.Result{RequeueAfter: requeueReady}, nil
+			log.Infof(ctx, "cluster already reconciled, waiting for next event")
+			return common.Result{}, nil
 		}
 	}
 
