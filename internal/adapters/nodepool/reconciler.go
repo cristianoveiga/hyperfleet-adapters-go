@@ -163,6 +163,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, e
 	}
 
 	// Step 11: Requeue after 5m
+	log.Infof(ctx, "nodepool reconciler: nodepool %s reconciled, requeueing after %s", nodepoolID, requeueAfterApply)
 	return common.Result{RequeueAfter: requeueAfterApply}, nil
 }
 

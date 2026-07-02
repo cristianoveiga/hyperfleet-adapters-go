@@ -139,6 +139,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 	}
 
 	// Step 10: Requeue after 5 minutes.
+	log.Infof(ctx, "hc-adapter: cluster %s reconciled, requeueing after %s", clusterID, requeueReady)
 	return common.Result{RequeueAfter: requeueReady}, nil
 }
 

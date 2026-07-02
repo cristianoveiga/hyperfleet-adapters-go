@@ -50,7 +50,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 	// Step 2: If cluster has Reconciled condition == "True", requeue slowly.
 	for _, cond := range cluster.Status.Conditions {
 		if cond.Type == "Reconciled" && cond.Status == "True" {
-			r.log.Debugf(ctx, "vr: cluster %s: already reconciled, requeueing in %s", clusterID, requeueLong)
+			r.log.Infof(ctx, "vr: cluster %s: already reconciled, requeueing in %s", clusterID, requeueLong)
 			return common.Result{RequeueAfter: requeueLong}, nil
 		}
 	}
@@ -69,7 +69,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 	}
 	vr := statuses.VersionResolution()
 	if vr.Ready() && vr.ReleaseVersion == version {
-		r.log.Debugf(ctx, "vr: cluster %s: version %s already resolved, requeueing in %s", clusterID, version, requeueLong)
+		r.log.Infof(ctx, "vr: cluster %s: version %s already resolved, requeueing in %s", clusterID, version, requeueLong)
 		return common.Result{RequeueAfter: requeueLong}, nil
 	}
 

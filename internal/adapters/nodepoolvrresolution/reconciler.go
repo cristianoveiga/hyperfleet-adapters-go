@@ -69,7 +69,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, e
 	}
 	vr := statuses.NodePoolVR()
 	if vr.Ready() && vr.ReleaseVersion == version {
-		r.log.Debugf(ctx, "nodepool-vr: nodepool %s: version %s already resolved, requeueing in %s", nodepoolID, version, requeueLong)
+		r.log.Infof(ctx, "nodepool-vr: nodepool %s: version %s already resolved, requeueing in %s", nodepoolID, version, requeueLong)
 		return common.Result{RequeueAfter: requeueLong}, nil
 	}
 

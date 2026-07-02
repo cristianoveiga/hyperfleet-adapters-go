@@ -112,5 +112,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Re
 	}
 
 	// Step 6: Requeue
+	r.log.Infof(ctx, "placement: cluster %s placed, requeueing after %s", clusterID, requeueAfter)
 	return common.Result{RequeueAfter: requeueAfter}, nil
 }
