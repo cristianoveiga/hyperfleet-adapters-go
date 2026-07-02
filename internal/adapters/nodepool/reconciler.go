@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,12 +40,19 @@ func New(api hyperfleetapi.Client, transport transport.Client, log logger.Logger
 	}
 }
 
-// Reconcile runs one reconciliation cycle for the given nodepoolID.
-func (r *Reconciler) Reconcile(ctx context.Context, nodepoolID string) (common.Result, error) {
-	log := r.log.With("nodepoolID", nodepoolID)
+// Reconcile runs one reconciliation cycle for the given id.
+// id is a compound key "clusterID/nodepoolID" as enqueued by the subscriber.
+func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, error) {
+	parts := strings.SplitN(id, "/", 2)
+	if len(parts) != 2 {
+		return common.Result{}, fmt.Errorf("nodepool reconciler: invalid workqueue key %q: expected clusterID/nodepoolID", id)
+	}
+	clusterID, nodepoolID := parts[0], parts[1]
+
+	log := r.log.With("clusterID", clusterID).With("nodepoolID", nodepoolID)
 
 	// Step 1: GET nodepool
-	np, err := r.api.GetNodePool(ctx, nodepoolID)
+	np, err := r.api.GetNodePool(ctx, clusterID, nodepoolID)
 	if err != nil {
 		var nfe *hyperfleetapi.NotFoundError
 		if errors.As(err, &nfe) {
@@ -72,7 +80,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, nodepoolID string) (common.R
 	}
 
 	// Step 4: GET nodepool statuses
-	nodepoolStatuses, err := r.api.GetNodePoolStatuses(ctx, nodepoolID)
+	nodepoolStatuses, err := r.api.GetNodePoolStatuses(ctx, clusterID, nodepoolID)
 	if err != nil {
 		return common.Result{}, fmt.Errorf("nodepool reconciler: get nodepool statuses: %w", err)
 	}
@@ -150,7 +158,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, nodepoolID string) (common.R
 	payload := r.buildStatusPayload(np, mwStatus)
 
 	// Step 10: PUT nodepool status
-	if err := r.api.PutNodePoolStatus(ctx, nodepoolID, payload); err != nil {
+	if err := r.api.PutNodePoolStatus(ctx, clusterID, nodepoolID, payload); err != nil {
 		return common.Result{}, fmt.Errorf("nodepool reconciler: put nodepool status: %w", err)
 	}
 

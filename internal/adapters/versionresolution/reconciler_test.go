@@ -59,7 +59,7 @@ func (m *mockHFServer) handler() http.Handler {
 
 		case r.Method == http.MethodGet && isStatuses:
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(m.statuses) //nolint:errcheck
+			json.NewEncoder(w).Encode(map[string]any{"items": m.statuses}) //nolint:errcheck
 
 		case r.Method == http.MethodPut && isStatuses:
 			var payload hyperfleetapi.StatusPayload
@@ -138,7 +138,7 @@ func TestReconciler_HappyPath(t *testing.T) {
 	require.Equal(t, "4.22.0-ec.4", put.Data["release_version"])
 	require.Equal(t, "candidate-4.22", put.Data["release_channel"])
 	require.Equal(t, "candidate", put.Data["release_channel_group"])
-	require.Len(t, put.Conditions, 2)
+	require.Len(t, put.Conditions, 3)
 
 	// Verify ObservedTime is a valid RFC3339 timestamp.
 	_, parseErr := time.Parse(time.RFC3339, put.ObservedTime)

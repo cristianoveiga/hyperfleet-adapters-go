@@ -37,9 +37,16 @@ func NewReconciler(hfClient hyperfleetapi.Client, cincinnati *versionresolution.
 }
 
 // Reconcile implements the nodepool version-resolution adapter reconciliation loop.
-func (r *Reconciler) Reconcile(ctx context.Context, nodepoolID string) (common.Result, error) {
-	// Step 1: GET /nodepools/{id}
-	np, err := r.hfClient.GetNodePool(ctx, nodepoolID)
+// id is a compound key "clusterID/nodepoolID" as enqueued by the subscriber.
+func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, error) {
+	parts := strings.SplitN(id, "/", 2)
+	if len(parts) != 2 {
+		return common.Result{}, fmt.Errorf("nodepool-vr: invalid workqueue key %q: expected clusterID/nodepoolID", id)
+	}
+	clusterID, nodepoolID := parts[0], parts[1]
+
+	// Step 1: GET /clusters/{clusterID}/nodepools/{nodepoolID}
+	np, err := r.hfClient.GetNodePool(ctx, clusterID, nodepoolID)
 	if err != nil {
 		var notFound *hyperfleetapi.NotFoundError
 		if errors.As(err, &notFound) {
@@ -56,8 +63,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, nodepoolID string) (common.R
 		return common.Result{RequeueAfter: requeueShort}, nil
 	}
 
-	// Step 3: GET /nodepools/{id}/statuses and check if already resolved.
-	statuses, err := r.hfClient.GetNodePoolStatuses(ctx, nodepoolID)
+	// Step 3: GET /clusters/{clusterID}/nodepools/{nodepoolID}/statuses and check if already resolved.
+	statuses, err := r.hfClient.GetNodePoolStatuses(ctx, clusterID, nodepoolID)
 	if err != nil {
 		return common.Result{}, fmt.Errorf("nodepool-vr: get nodepool statuses %s: %w", nodepoolID, err)
 	}
@@ -116,7 +123,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, nodepoolID string) (common.R
 		},
 	}
 
-	if err := r.hfClient.PutNodePoolStatus(ctx, nodepoolID, payload); err != nil {
+	if err := r.hfClient.PutNodePoolStatus(ctx, clusterID, nodepoolID, payload); err != nil {
 		return common.Result{}, fmt.Errorf("nodepool-vr: put nodepool status %s: %w", nodepoolID, err)
 	}
 
