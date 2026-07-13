@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -54,15 +53,36 @@ func WithEventLogMax(n int) StoreOption {
 	}
 }
 
+// WithClusters enables polling of clusters. Adapters that reconcile clusters
+// (version-resolution, placement, hc) must opt in with this option. Adapters
+// that reconcile node pools also need this because they read the parent cluster
+// for dependency gating.
+func WithClusters() StoreOption {
+	return func(s *hyperfleetStore) {
+		s.enableClusters = true
+	}
+}
+
+// WithNodePools enables polling of node pools. Adapters that reconcile node
+// pools (nodepool-vr, nodepool) must opt in with this option. Typically used
+// together with WithClusters.
+func WithNodePools() StoreOption {
+	return func(s *hyperfleetStore) {
+		s.enableNodePools = true
+	}
+}
+
 // hyperfleetStore implements storectrl.Store backed by the HyperFleet HTTP API.
-// It maintains an in-memory cache of clusters and node pools, updated by a
-// polling loop, and supports the full Store interface including Watch with
-// event-log-based resumption.
+// It maintains an in-memory cache of clusters and (optionally) node pools,
+// updated by a polling loop, and supports the full Store interface including
+// Watch with event-log-based resumption.
 type hyperfleetStore struct {
-	client       hyperfleetapi.Client
-	scheme       *runtime.Scheme
-	log          logger.Logger
-	pollInterval time.Duration
+	client          hyperfleetapi.Client
+	scheme          *runtime.Scheme
+	log             logger.Logger
+	pollInterval    time.Duration
+	enableClusters  bool
+	enableNodePools bool
 
 	// in-memory cache for Get/List and diff computation
 	mu       sync.RWMutex
@@ -83,10 +103,9 @@ type hyperfleetStore struct {
 	eventLog    []eventLogEntry
 	eventLogMax int
 
-	// registered watchers
+	// registered watchers (protected by mu)
 	clusterWatchers  []*pollingWatcher
 	nodepoolWatchers []*pollingWatcher
-	watcherMu        sync.Mutex
 
 	// repollCh receives cluster IDs for immediate targeted re-fetch
 	repollCh chan string
@@ -141,15 +160,24 @@ func (s *hyperfleetStore) pollLoop(ctx context.Context) {
 		case <-ticker.C:
 			s.pollAll(ctx)
 		case clusterID := <-s.repollCh:
-			s.pollCluster(ctx, clusterID)
+			if s.enableClusters {
+				s.pollCluster(ctx, clusterID)
+			}
+			if s.enableNodePools {
+				s.pollNodePools(ctx, clusterID)
+			}
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-// pollAll discovers all clusters and their node pools from the API.
+// pollAll discovers all clusters and (if enabled) their node pools from the API.
 func (s *hyperfleetStore) pollAll(ctx context.Context) {
+	if !s.enableClusters && !s.enableNodePools {
+		return
+	}
+
 	clusters, err := s.client.ListClusters(ctx)
 	if err != nil {
 		s.log.Errorf(ctx, "hyperfleetstore: list clusters: %v", err)
@@ -161,7 +189,16 @@ func (s *hyperfleetStore) pollAll(ctx context.Context) {
 
 	for _, detail := range clusters {
 		seen[detail.ID] = true
-		s.pollCluster(ctx, detail.ID)
+		if s.enableClusters {
+			s.pollCluster(ctx, detail.ID)
+		}
+		if s.enableNodePools {
+			s.pollNodePools(ctx, detail.ID)
+		}
+	}
+
+	if !s.enableClusters {
+		return
 	}
 
 	// Emit EventDeleted for clusters that disappeared
@@ -249,9 +286,6 @@ func (s *hyperfleetStore) pollCluster(ctx context.Context, clusterID string) {
 	gvk := clusterGVK()
 	s.logEvent(gvk, revisionInt(rv), event)
 	s.notifyClusterWatchers(event)
-
-	// Poll node pools for this cluster
-	s.pollNodePools(ctx, clusterID)
 }
 
 // pollNodePools fetches all node pools for the given cluster.
@@ -460,30 +494,32 @@ func (s *hyperfleetStore) List(_ context.Context, list client.ObjectList, opts .
 		setter.SetResourceVersion(rv)
 	}
 
-	switch list.(type) {
+	switch l := list.(type) {
 	case *HyperFleetClusterList:
 		s.mu.RLock()
-		items := make([]client.Object, 0, len(s.clusters))
+		items := make([]HyperFleetCluster, 0, len(s.clusters))
 		for _, c := range s.clusters {
 			if listOpts.Namespace != "" && c.GetNamespace() != listOpts.Namespace {
 				continue
 			}
-			items = append(items, c.DeepCopyObject().(client.Object))
+			items = append(items, *c.DeepCopyObject().(*HyperFleetCluster))
 		}
 		s.mu.RUnlock()
-		return populateListItems(list, items)
+		l.Items = items
+		return nil
 
 	case *HyperFleetNodePoolList:
 		s.mu.RLock()
-		items := make([]client.Object, 0, len(s.npools))
+		items := make([]HyperFleetNodePool, 0, len(s.npools))
 		for _, np := range s.npools {
 			if listOpts.Namespace != "" && np.GetNamespace() != listOpts.Namespace {
 				continue
 			}
-			items = append(items, np.DeepCopyObject().(client.Object))
+			items = append(items, *np.DeepCopyObject().(*HyperFleetNodePool))
 		}
 		s.mu.RUnlock()
-		return populateListItems(list, items)
+		l.Items = items
+		return nil
 
 	default:
 		return fmt.Errorf("hyperfleetstore: List: unsupported type %T", list)
@@ -736,14 +772,13 @@ func (s *hyperfleetStore) Watch(_ context.Context, list client.ObjectList, opts 
 		w.ch <- evt
 	}
 
-	s.watcherMu.Lock()
+	// Register watcher while still holding s.mu — no gap between replay and live events.
 	switch list.(type) {
 	case *HyperFleetClusterList:
 		s.clusterWatchers = append(s.clusterWatchers, w)
 	case *HyperFleetNodePoolList:
 		s.nodepoolWatchers = append(s.nodepoolWatchers, w)
 	}
-	s.watcherMu.Unlock()
 
 	return w, nil
 }
@@ -821,18 +856,15 @@ func (s *hyperfleetStore) eventsSince(fromRevision int64, gvk schema.GroupVersio
 }
 
 // notifyClusterWatchers sends an event to all registered cluster watchers.
-// Stopped or overflowed watchers are removed.
+// Must be called without s.mu held (it acquires s.mu internally).
 func (s *hyperfleetStore) notifyClusterWatchers(event storectrl.Event) {
-	s.watcherMu.Lock()
-	defer s.watcherMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.notifyClusterWatchersLocked(event)
 }
 
-// notifyClusterWatchersLocked sends events to cluster watchers. Must be called
-// with watcherMu held OR during Create/Update/Delete which hold s.mu.
-// Note: Create/Update/Delete hold s.mu but call the unlocked version, so
-// we need the locked version to avoid double-lock. We use watcherMu for watcher
-// list management.
+// notifyClusterWatchersLocked sends events to cluster watchers.
+// Must be called with s.mu held.
 func (s *hyperfleetStore) notifyClusterWatchersLocked(event storectrl.Event) {
 	active := make([]*pollingWatcher, 0, len(s.clusterWatchers))
 	for _, w := range s.clusterWatchers {
@@ -848,12 +880,15 @@ func (s *hyperfleetStore) notifyClusterWatchersLocked(event storectrl.Event) {
 }
 
 // notifyNodePoolWatchers sends an event to all registered node pool watchers.
+// Must be called without s.mu held (it acquires s.mu internally).
 func (s *hyperfleetStore) notifyNodePoolWatchers(event storectrl.Event) {
-	s.watcherMu.Lock()
-	defer s.watcherMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.notifyNodePoolWatchersLocked(event)
 }
 
+// notifyNodePoolWatchersLocked sends events to node pool watchers.
+// Must be called with s.mu held.
 func (s *hyperfleetStore) notifyNodePoolWatchersLocked(event storectrl.Event) {
 	active := make([]*pollingWatcher, 0, len(s.nodepoolWatchers))
 	for _, w := range s.nodepoolWatchers {
@@ -925,32 +960,6 @@ func copyObject(src, dst interface{}) error {
 	return json.Unmarshal(data, dst)
 }
 
-// populateListItems sets the Items field of list using reflection.
-func populateListItems(list client.ObjectList, items []client.Object) error {
-	listVal := reflect.ValueOf(list)
-	if listVal.Kind() == reflect.Ptr {
-		listVal = listVal.Elem()
-	}
-
-	itemsField := listVal.FieldByName("Items")
-	if !itemsField.IsValid() {
-		return fmt.Errorf("list type %T does not have Items field", list)
-	}
-	if !itemsField.CanSet() {
-		return fmt.Errorf("Items field of list type %T cannot be set", list)
-	}
-
-	itemsSlice := reflect.MakeSlice(itemsField.Type(), 0, len(items))
-	for _, item := range items {
-		itemVal := reflect.ValueOf(item)
-		if itemVal.Kind() == reflect.Ptr {
-			itemVal = itemVal.Elem()
-		}
-		itemsSlice = reflect.Append(itemsSlice, itemVal)
-	}
-	itemsField.Set(itemsSlice)
-	return nil
-}
 
 // Ensure hyperfleetStore implements storectrl.Store.
 var _ storectrl.Store = (*hyperfleetStore)(nil)

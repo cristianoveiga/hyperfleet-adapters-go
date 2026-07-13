@@ -50,7 +50,7 @@ worker goroutine ──▶ Reconcile(ctx, req) ◀──────────
 
 **The informer pattern.** The storectrl cache wraps the polling store into a controller-runtime-compatible informer. It performs an initial List to populate its indexed cache, then opens a Watch stream to receive incremental events. Reconcilers read from this indexed cache (`r.client.Get`) — never directly from the HTTP API — so reads are always fast and do not add API load.
 
-**Low-latency pipeline.** After each successful adapter status write, `TriggerRepoll` fires an immediate re-fetch of that cluster. The downstream adapter's informer sees the updated statuses within milliseconds and enqueues its reconcile, without waiting for the next 10-second tick.
+**TriggerRepoll for self-consistency.** After each successful status write, `TriggerRepoll` fires an immediate re-fetch of that cluster so the same adapter process sees its own write reflected in the cache quickly. Cross-adapter propagation (e.g. placement → hc) is bounded by the poll interval — each adapter runs as an independent process with its own store, so a write by one is not visible to another until the next poll tick.
 
 **Deduplication.** The work queue collapses multiple events for the same cluster into a single reconcile call. If the polling loop fires an add and a modify before a worker picks up the request, only one reconcile runs.
 
