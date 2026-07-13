@@ -33,10 +33,12 @@ type Client interface {
 	GetCluster(ctx context.Context, clusterID string) (*ClusterDetail, error)
 	GetClusterStatuses(ctx context.Context, clusterID string) (AdapterStatuses, error)
 	PutClusterStatus(ctx context.Context, clusterID string, payload StatusPayload) error
+	ListClusters(ctx context.Context) ([]*ClusterDetail, error)
 
 	GetNodePool(ctx context.Context, clusterID, nodepoolID string) (*NodePoolDetail, error)
 	GetNodePoolStatuses(ctx context.Context, clusterID, nodepoolID string) (AdapterStatuses, error)
 	PutNodePoolStatus(ctx context.Context, clusterID, nodepoolID string, payload StatusPayload) error
+	ListNodePools(ctx context.Context, clusterID string) ([]*NodePoolDetail, error)
 }
 
 // HTTPClient is the standard-library-based implementation of Client.
@@ -224,6 +226,48 @@ func (c *HTTPClient) GetNodePoolStatuses(ctx context.Context, clusterID, nodepoo
 // PutNodePoolStatus updates the adapter status for a node pool.
 func (c *HTTPClient) PutNodePoolStatus(ctx context.Context, clusterID, nodepoolID string, payload StatusPayload) error {
 	return c.put(ctx, fmt.Sprintf("/clusters/%s/nodepools/%s/statuses", clusterID, nodepoolID), payload)
+}
+
+// ListClusters fetches all clusters using paginated requests.
+func (c *HTTPClient) ListClusters(ctx context.Context) ([]*ClusterDetail, error) {
+	var all []*ClusterDetail
+	page := 1
+	for {
+		var resp struct {
+			Items []*ClusterDetail `json:"items"`
+			Total int              `json:"total"`
+		}
+		if err := c.get(ctx, fmt.Sprintf("/clusters?page=%d&size=100", page), &resp); err != nil {
+			return nil, err
+		}
+		all = append(all, resp.Items...)
+		if len(all) >= resp.Total {
+			break
+		}
+		page++
+	}
+	return all, nil
+}
+
+// ListNodePools fetches all node pools for a cluster using paginated requests.
+func (c *HTTPClient) ListNodePools(ctx context.Context, clusterID string) ([]*NodePoolDetail, error) {
+	var all []*NodePoolDetail
+	page := 1
+	for {
+		var resp struct {
+			Items []*NodePoolDetail `json:"items"`
+			Total int               `json:"total"`
+		}
+		if err := c.get(ctx, fmt.Sprintf("/clusters/%s/nodepools?page=%d&size=100", clusterID, page), &resp); err != nil {
+			return nil, err
+		}
+		all = append(all, resp.Items...)
+		if len(all) >= resp.Total {
+			break
+		}
+		page++
+	}
+	return all, nil
 }
 
 // Ensure HTTPClient implements Client.

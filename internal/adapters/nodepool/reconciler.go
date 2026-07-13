@@ -3,17 +3,17 @@ package nodepool
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/nodepool/manifest"
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/hyperfleetapi"
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/hyperfleetstore"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
@@ -28,100 +28,83 @@ type Reconciler struct {
 	api       hyperfleetapi.Client
 	transport transport.Client
 	log       logger.Logger
+	client    client.Client
+	store     interface{ TriggerRepoll(clusterID string) }
 }
 
 // New creates a new nodepool Reconciler.
-func New(api hyperfleetapi.Client, transport transport.Client, log logger.Logger) *Reconciler {
+func New(api hyperfleetapi.Client, transport transport.Client, log logger.Logger, c client.Client, store interface{ TriggerRepoll(clusterID string) }) *Reconciler {
 	return &Reconciler{
 		api:       api,
 		transport: transport,
 		log:       log,
+		client:    c,
+		store:     store,
 	}
 }
 
-// Reconcile runs one reconciliation cycle for the given id.
-// id is a compound key "clusterID/nodepoolID" as enqueued by the subscriber.
-func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, error) {
-	parts := strings.SplitN(id, "/", 2)
-	if len(parts) != 2 {
-		return common.Result{}, fmt.Errorf("nodepool reconciler: invalid workqueue key %q: expected clusterID/nodepoolID", id)
-	}
-	clusterID, nodepoolID := parts[0], parts[1]
-
+// Reconcile runs the nodepool adapter loop for one nodepool event from the store-backed cache.
+// req.Namespace = clusterID, req.Name = nodepoolID.
+func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	clusterID := req.Namespace
+	nodepoolID := req.Name
 	log := r.log.With("clusterID", clusterID).With("nodepoolID", nodepoolID)
 
-	// Step 1: GET nodepool
-	np, err := r.api.GetNodePool(ctx, clusterID, nodepoolID)
-	if err != nil {
-		var nfe *hyperfleetapi.NotFoundError
-		if errors.As(err, &nfe) {
+	// Read nodepool from cache.
+	var np hyperfleetstore.HyperFleetNodePool
+	if err := r.client.Get(ctx, req.NamespacedName, &np); err != nil {
+		if apierrors.IsNotFound(err) {
 			log.Infof(ctx, "nodepool %s not found, skipping", nodepoolID)
-			return common.Result{}, nil
+			return reconcile.Result{}, nil
 		}
-		return common.Result{}, fmt.Errorf("nodepool reconciler: get nodepool: %w", err)
+		return reconcile.Result{}, fmt.Errorf("nodepool reconciler: get nodepool: %w", err)
 	}
 
-	// Step 2: GET cluster
-	cluster, err := r.api.GetCluster(ctx, clusterID)
-	if err != nil {
-		var nfe *hyperfleetapi.NotFoundError
-		if errors.As(err, &nfe) {
+	// Read parent cluster from cache (namespace="hyperfleet", name=clusterID).
+	var cluster hyperfleetstore.HyperFleetCluster
+	clusterKey := types.NamespacedName{Namespace: hyperfleetstore.ClusterNamespace, Name: clusterID}
+	if err := r.client.Get(ctx, clusterKey, &cluster); err != nil {
+		if apierrors.IsNotFound(err) {
 			log.Infof(ctx, "cluster %s not found for nodepool %s, skipping", clusterID, nodepoolID)
-			return common.Result{}, nil
+			return reconcile.Result{}, nil
 		}
-		return common.Result{}, fmt.Errorf("nodepool reconciler: get cluster: %w", err)
+		return reconcile.Result{}, fmt.Errorf("nodepool reconciler: get cluster: %w", err)
 	}
 
-	// Step 3: GET cluster statuses
-	clusterStatuses, err := r.api.GetClusterStatuses(ctx, clusterID)
-	if err != nil {
-		return common.Result{}, fmt.Errorf("nodepool reconciler: get cluster statuses: %w", err)
-	}
-
-	// Step 4: GET nodepool statuses
-	nodepoolStatuses, err := r.api.GetNodePoolStatuses(ctx, clusterID, nodepoolID)
-	if err != nil {
-		return common.Result{}, fmt.Errorf("nodepool reconciler: get nodepool statuses: %w", err)
-	}
-
-	// Step 5: Gate check
-	placement := clusterStatuses.Placement()
-	hc := clusterStatuses.HCAdapter()
-	nodepoolVR := nodepoolStatuses.NodePoolVR()
+	// Gate checks using AdapterStatuses pre-populated by the polling loop.
+	placement := cluster.AdapterStatuses.Placement()
+	hc := cluster.AdapterStatuses.HCAdapter()
+	nodepoolVR := np.AdapterStatuses.NodePoolVR()
 
 	if !placement.Ready() {
 		log.Infof(ctx, "placement not ready for nodepool %s, waiting for next event", nodepoolID)
-		return common.Result{}, nil
+		return reconcile.Result{}, nil
 	}
 	if !hc.Available() {
 		log.Infof(ctx, "hc-adapter not available for nodepool %s, waiting for next event", nodepoolID)
-		return common.Result{}, nil
+		return reconcile.Result{}, nil
 	}
 	if !nodepoolVR.Ready() {
 		log.Infof(ctx, "nodepool VR not ready for nodepool %s, waiting for next event", nodepoolID)
-		return common.Result{}, nil
+		return reconcile.Result{}, nil
 	}
 	if nodepoolVR.ReleaseVersion != np.Spec.Release.Version {
 		log.Infof(ctx, "nodepool VR version %q does not match spec version %q for nodepool %s, waiting for next event",
-
 			nodepoolVR.ReleaseVersion, np.Spec.Release.Version, nodepoolID)
-		return common.Result{}, nil
+		return reconcile.Result{}, nil
 	}
 
-	// Step 6: Build ManifestWork
 	zone := np.Spec.Platform.GCP.Zone
 	if zone == "" {
 		zone = np.Spec.Platform.GCP.Region + "-a"
 	}
 
-	_ = cluster // cluster fetched for validation; subnet/region come from nodepool spec
-
 	mw, err := manifest.Build(manifest.Input{
 		NodePoolID:         nodepoolID,
-		NodePoolName:       np.Name,
-		NodePoolGeneration: np.Generation,
+		NodePoolName:       np.DisplayName,
+		NodePoolGeneration: np.HFGeneration,
 		ClusterID:          clusterID,
-		ClusterName:        cluster.Name,
+		ClusterName:        cluster.DisplayName,
 		Replicas:           defaultReplicas,
 		MachineType:        manifest.DefaultMachineType,
 		GCPRegion:          np.Spec.Platform.GCP.Region,
@@ -132,49 +115,48 @@ func (r *Reconciler) Reconcile(ctx context.Context, id string) (common.Result, e
 		ReleaseImage:       nodepoolVR.ReleaseImage,
 	})
 	if err != nil {
-		return common.Result{}, fmt.Errorf("nodepool reconciler: build manifest work: %w", err)
+		return reconcile.Result{}, fmt.Errorf("nodepool reconciler: build manifest work: %w", err)
 	}
 
 	managementCluster := placement.ManagementClusterName
 	mwName := fmt.Sprintf("%s-%s", nodepoolID, adapterName)
 
-	// Step 7: Apply ManifestWork
 	if err := r.transport.Apply(ctx, managementCluster, mw); err != nil {
-		return common.Result{}, fmt.Errorf("nodepool reconciler: apply manifest work: %w", err)
+		return reconcile.Result{}, fmt.Errorf("nodepool reconciler: apply manifest work: %w", err)
 	}
 
-	// Step 8: GetStatus
 	mwStatus, err := r.transport.GetStatus(ctx, managementCluster, mwName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Infof(ctx, "manifest work %s not found yet, reporting unknown status", mwName)
 			mwStatus = nil
 		} else {
-			return common.Result{}, fmt.Errorf("nodepool reconciler: get manifest work status: %w", err)
+			return reconcile.Result{}, fmt.Errorf("nodepool reconciler: get manifest work status: %w", err)
 		}
 	}
 
-	// Step 9: Build status payload
-	payload := r.buildStatusPayload(np, mwStatus)
+	payload := r.buildStatusPayload(np.HFGeneration, mwStatus)
 
-	// Step 10: PUT nodepool status
 	if err := r.api.PutNodePoolStatus(ctx, clusterID, nodepoolID, payload); err != nil {
-		return common.Result{}, fmt.Errorf("nodepool reconciler: put nodepool status: %w", err)
+		return reconcile.Result{}, fmt.Errorf("nodepool reconciler: put nodepool status: %w", err)
 	}
 
-	// Step 11: Requeue after 5m
+	if r.store != nil {
+		r.store.TriggerRepoll(clusterID)
+	}
+
 	log.Infof(ctx, "nodepool reconciler: nodepool %s reconciled, requeueing after %s", nodepoolID, requeueAfterApply)
-	return common.Result{RequeueAfter: requeueAfterApply}, nil
+	return reconcile.Result{RequeueAfter: requeueAfterApply}, nil
 }
 
 // buildStatusPayload constructs the StatusPayload from the ManifestWorkStatus.
-func (r *Reconciler) buildStatusPayload(np *hyperfleetapi.NodePoolDetail, mwStatus *transport.ManifestWorkStatus) hyperfleetapi.StatusPayload {
+func (r *Reconciler) buildStatusPayload(generation int64, mwStatus *transport.ManifestWorkStatus) hyperfleetapi.StatusPayload {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if mwStatus == nil {
 		return hyperfleetapi.StatusPayload{
 			Adapter:            adapterName,
-			ObservedGeneration: np.Generation,
+			ObservedGeneration: generation,
 			ObservedTime:       now,
 			Conditions: []hyperfleetapi.Condition{
 				{Type: "Applied", Status: "Unknown", Reason: "ManifestWorkNotFound"},
@@ -244,7 +226,7 @@ func (r *Reconciler) buildStatusPayload(np *hyperfleetapi.NodePoolDetail, mwStat
 
 	return hyperfleetapi.StatusPayload{
 		Adapter:            adapterName,
-		ObservedGeneration: np.Generation,
+		ObservedGeneration: generation,
 		ObservedTime:       now,
 		Conditions:         conditions,
 		Data: map[string]any{
@@ -256,10 +238,3 @@ func (r *Reconciler) buildStatusPayload(np *hyperfleetapi.NodePoolDetail, mwStat
 
 // defaultReplicas is the hardcoded default for this POC.
 const defaultReplicas = int32(1)
-
-// conditionStatus converts a metav1.ConditionStatus to string.
-func conditionStatusString(s metav1.ConditionStatus) string {
-	return string(s)
-}
-
-var _ = conditionStatusString // suppress unused warning

@@ -3,17 +3,19 @@ package hc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/hc/manifest"
-	common "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common"
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/hyperfleetapi"
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport"
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/hc/manifest"
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/hyperfleetapi"
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/hyperfleetstore"
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport"
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
 
 const (
@@ -30,117 +32,112 @@ type Reconciler struct {
 	api       hyperfleetapi.Client
 	transport transport.Client
 	log       logger.Logger
+	client    client.Client
+	store     interface{ TriggerRepoll(clusterID string) }
 }
 
 // New creates a new Reconciler.
-func New(api hyperfleetapi.Client, transport transport.Client, log logger.Logger) *Reconciler {
+func New(api hyperfleetapi.Client, transport transport.Client, log logger.Logger, c client.Client, store interface{ TriggerRepoll(clusterID string) }) *Reconciler {
 	return &Reconciler{
 		api:       api,
 		transport: transport,
 		log:       log,
+		client:    c,
+		store:     store,
 	}
 }
 
-// Reconcile processes one cluster by ID and returns a Result indicating when to requeue.
-func (r *Reconciler) Reconcile(ctx context.Context, clusterID string) (common.Result, error) {
+// Reconcile runs the hc-adapter loop for one cluster event from the store-backed cache.
+func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	clusterID := req.Name
 	log := r.log.With("adapter", adapterName).With("cluster_id", clusterID)
 
-	// Step 1: GET /clusters/{id}
-	cluster, err := r.api.GetCluster(ctx, clusterID)
-	if err != nil {
-		var notFound *hyperfleetapi.NotFoundError
-		if errors.As(err, &notFound) {
+	var cluster hyperfleetstore.HyperFleetCluster
+	if err := r.client.Get(ctx, req.NamespacedName, &cluster); err != nil {
+		if apierrors.IsNotFound(err) {
 			log.Infof(ctx, "cluster not found, skipping")
-			return common.Result{}, nil
+			return reconcile.Result{}, nil
 		}
-		return common.Result{}, fmt.Errorf("%s: get cluster: %w", adapterName, err)
+		return reconcile.Result{}, fmt.Errorf("%s: get cluster: %w", adapterName, err)
 	}
 
-	// Step 2: Skip if already reconciled (Reconciled condition == "True").
+	// Skip if already reconciled.
 	for _, cond := range cluster.Status.Conditions {
 		if cond.Type == "Reconciled" && cond.Status == "True" {
 			log.Infof(ctx, "cluster already reconciled, waiting for next event")
-			return common.Result{}, nil
+			return reconcile.Result{}, nil
 		}
 	}
 
-	// Step 3: GET /clusters/{id}/statuses
-	statuses, err := r.api.GetClusterStatuses(ctx, clusterID)
-	if err != nil {
-		return common.Result{}, fmt.Errorf("%s: get cluster statuses: %w", adapterName, err)
-	}
-
-	// Step 4: Check placement and version-resolution readiness.
-	placement := statuses.Placement()
-	vr := statuses.VersionResolution()
+	// Check placement and version-resolution readiness via AdapterStatuses pre-populated by the polling loop.
+	placement := cluster.AdapterStatuses.Placement()
+	vr := cluster.AdapterStatuses.VersionResolution()
 
 	if !placement.Ready() || !vr.Ready() || vr.ReleaseVersion != cluster.Spec.Release.Version {
 		log.Infof(ctx, "dependencies not ready (placement=%v, vr=%v), waiting for next event",
 			placement.Ready(), vr.Ready())
-		return common.Result{}, nil
+		return reconcile.Result{}, nil
 	}
 
-	// Step 5: Build ManifestWork.
+	// Build ManifestWork.
 	mwInput := manifest.Input{
-		ClusterID:                    clusterID,
-		ClusterName:                  cluster.Name,
-		Generation:                   cluster.Generation,
-		CreatedBy:                    cluster.CreatedBy,
-		InfraID:                      cluster.Spec.InfraID,
-		IssuerURL:                    cluster.Spec.IssuerURL,
-		ClusterIDUUID:                cluster.ID,
-		GCPProjectID:                 cluster.Spec.Platform.GCP.ProjectID,
-		GCPRegion:                    cluster.Spec.Platform.GCP.Region,
-		GCPNetwork:                   cluster.Spec.Platform.GCP.Network,
-		GCPSubnet:                    cluster.Spec.Platform.GCP.Subnet,
-		GCPEndpointAccess:            cluster.Spec.Platform.GCP.EndpointAccess,
-		WIFProjectNumber:             cluster.Spec.Platform.GCP.WorkloadIdentity.ProjectNumber,
-		WIFPoolID:                    cluster.Spec.Platform.GCP.WorkloadIdentity.PoolID,
-		WIFProviderID:                cluster.Spec.Platform.GCP.WorkloadIdentity.ProviderID,
-		NodePoolEmail:                cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.NodePool,
-		ControlPlaneEmail:            cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.ControlPlane,
-		CloudControllerEmail:         cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.CloudController,
-		StorageEmail:                 cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.Storage,
-		ImageRegistryEmail:           cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.ImageRegistry,
-		NetworkEmail:                 cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.Network,
-		ReleaseImage:                 vr.ReleaseImage,
-		ReleaseChannel:               vr.ReleaseChannel,
-		BaseDomain:                   placement.BaseDomain,
+		ClusterID:            clusterID,
+		ClusterName:          cluster.DisplayName,
+		Generation:           cluster.HFGeneration,
+		CreatedBy:            cluster.CreatedBy,
+		InfraID:              cluster.Spec.InfraID,
+		IssuerURL:            cluster.Spec.IssuerURL,
+		ClusterIDUUID:        cluster.Spec.ClusterID,
+		GCPProjectID:         cluster.Spec.Platform.GCP.ProjectID,
+		GCPRegion:            cluster.Spec.Platform.GCP.Region,
+		GCPNetwork:           cluster.Spec.Platform.GCP.Network,
+		GCPSubnet:            cluster.Spec.Platform.GCP.Subnet,
+		GCPEndpointAccess:    cluster.Spec.Platform.GCP.EndpointAccess,
+		WIFProjectNumber:     cluster.Spec.Platform.GCP.WorkloadIdentity.ProjectNumber,
+		WIFPoolID:            cluster.Spec.Platform.GCP.WorkloadIdentity.PoolID,
+		WIFProviderID:        cluster.Spec.Platform.GCP.WorkloadIdentity.ProviderID,
+		NodePoolEmail:        cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.NodePool,
+		ControlPlaneEmail:    cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.ControlPlane,
+		CloudControllerEmail: cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.CloudController,
+		StorageEmail:         cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.Storage,
+		ImageRegistryEmail:   cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.ImageRegistry,
+		NetworkEmail:         cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.Network,
+		ReleaseImage:         vr.ReleaseImage,
+		ReleaseChannel:       vr.ReleaseChannel,
+		BaseDomain:           placement.BaseDomain,
 	}
 
 	mw, err := manifest.Build(mwInput)
 	if err != nil {
-		return common.Result{}, fmt.Errorf("%s: build manifest work: %w", adapterName, err)
+		return reconcile.Result{}, fmt.Errorf("%s: build manifest work: %w", adapterName, err)
 	}
 
-	// Step 6: Apply ManifestWork.
 	if err := r.transport.Apply(ctx, placement.ManagementClusterName, mw); err != nil {
-		return common.Result{}, fmt.Errorf("%s: apply manifest work: %w", adapterName, err)
+		return reconcile.Result{}, fmt.Errorf("%s: apply manifest work: %w", adapterName, err)
 	}
 
-	// Step 7: Get ManifestWork status.
 	mwName := mw.Name
 	mwStatus, err := r.transport.GetStatus(ctx, placement.ManagementClusterName, mwName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			// ManifestWork hasn't been processed yet — report Unknown conditions.
 			mwStatus = nil
 		} else {
-			return common.Result{}, fmt.Errorf("%s: get manifest work status: %w", adapterName, err)
+			return reconcile.Result{}, fmt.Errorf("%s: get manifest work status: %w", adapterName, err)
 		}
 	}
 
-	// Step 8: Build status payload.
-	payload := r.buildStatusPayload(cluster.Generation, mwStatus)
+	payload := r.buildStatusPayload(cluster.HFGeneration, mwStatus)
 
-	// Step 9: PUT /clusters/{id}/statuses.
 	if err := r.api.PutClusterStatus(ctx, clusterID, payload); err != nil {
-		return common.Result{}, fmt.Errorf("%s: put cluster status: %w", adapterName, err)
+		return reconcile.Result{}, fmt.Errorf("%s: put cluster status: %w", adapterName, err)
 	}
 
-	// Step 10: Requeue after 5 minutes.
+	if r.store != nil {
+		r.store.TriggerRepoll(clusterID)
+	}
+
 	log.Infof(ctx, "hc-adapter: cluster %s reconciled, requeueing after %s", clusterID, requeueReady)
-	return common.Result{RequeueAfter: requeueReady}, nil
+	return reconcile.Result{RequeueAfter: requeueReady}, nil
 }
 
 // buildStatusPayload constructs the StatusPayload from the ManifestWork status.

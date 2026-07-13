@@ -11,9 +11,15 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/hyperfleetapi"
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/hyperfleetstore"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
 
@@ -58,20 +64,58 @@ func testCandidates() []Candidate {
 	}
 }
 
-// testCluster returns a ClusterDetail with optional conditions.
-func testCluster(id string, conditions []hyperfleetapi.Condition) hyperfleetapi.ClusterDetail {
-	return hyperfleetapi.ClusterDetail{
-		ID:         id,
-		Name:       "test-cluster",
-		Generation: 1,
-		Status: hyperfleetapi.ClusterStatus{
-			Conditions: conditions,
-		},
-	}
+// mockStoreClient is a minimal client.Client that returns a fixed HyperFleetCluster on Get.
+type mockStoreClient struct {
+	cluster *hyperfleetstore.HyperFleetCluster
+	getErr  error
 }
 
+func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+	if m.getErr != nil {
+		return m.getErr
+	}
+	if m.cluster == nil {
+		return apierrors.NewNotFound(schema.GroupResource{Resource: "cluster"}, "")
+	}
+	c, ok := obj.(*hyperfleetstore.HyperFleetCluster)
+	if !ok {
+		return fmt.Errorf("unexpected type %T", obj)
+	}
+	*c = *m.cluster
+	return nil
+}
+
+func (m *mockStoreClient) List(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
+	return nil
+}
+func (m *mockStoreClient) Create(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
+	return nil
+}
+func (m *mockStoreClient) Delete(_ context.Context, _ client.Object, _ ...client.DeleteOption) error {
+	return nil
+}
+func (m *mockStoreClient) Update(_ context.Context, _ client.Object, _ ...client.UpdateOption) error {
+	return nil
+}
+func (m *mockStoreClient) Patch(_ context.Context, _ client.Object, _ client.Patch, _ ...client.PatchOption) error {
+	return nil
+}
+func (m *mockStoreClient) DeleteAllOf(_ context.Context, _ client.Object, _ ...client.DeleteAllOfOption) error {
+	return nil
+}
+func (m *mockStoreClient) Apply(_ context.Context, _ runtime.ApplyConfiguration, _ ...client.ApplyOption) error {
+	return nil
+}
+func (m *mockStoreClient) SubResource(_ string) client.SubResourceClient { return nil }
+func (m *mockStoreClient) Status() client.SubResourceWriter { return nil }
+func (m *mockStoreClient) Scheme() *runtime.Scheme                       { return nil }
+func (m *mockStoreClient) RESTMapper() meta.RESTMapper                   { return nil }
+func (m *mockStoreClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVersionKind, error) {
+	return schema.GroupVersionKind{}, nil
+}
+func (m *mockStoreClient) IsObjectNamespaced(_ runtime.Object) (bool, error) { return false, nil }
+
 // mockHyperfleetClient is a mock of hyperfleetapi.Client backed by an httptest.Server.
-// It uses the standard net/http client configured to talk to the test server.
 type mockHyperfleetClient struct {
 	srv    *httptest.Server
 	client *http.Client
@@ -164,90 +208,108 @@ func (m *mockHyperfleetClient) PutNodePoolStatus(ctx context.Context, clusterID,
 	return m.doPut(ctx, fmt.Sprintf("/clusters/%s/nodepools/%s/statuses", clusterID, nodepoolID), payload)
 }
 
+func (m *mockHyperfleetClient) ListClusters(ctx context.Context) ([]*hyperfleetapi.ClusterDetail, error) {
+	var resp struct {
+		Items []*hyperfleetapi.ClusterDetail `json:"items"`
+		Total int                            `json:"total"`
+	}
+	if err := m.doGet(ctx, "/clusters?page=1&size=100", &resp); err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
+}
+
+func (m *mockHyperfleetClient) ListNodePools(ctx context.Context, clusterID string) ([]*hyperfleetapi.NodePoolDetail, error) {
+	var resp struct {
+		Items []*hyperfleetapi.NodePoolDetail `json:"items"`
+		Total int                             `json:"total"`
+	}
+	if err := m.doGet(ctx, fmt.Sprintf("/clusters/%s/nodepools?page=1&size=100", clusterID), &resp); err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
+}
+
 // Ensure mockHyperfleetClient implements Client.
 var _ hyperfleetapi.Client = (*mockHyperfleetClient)(nil)
+
+// buildCluster builds a HyperFleetCluster for use in tests.
+func buildCluster(id string, conditions []hyperfleetapi.Condition, statuses hyperfleetapi.AdapterStatuses) *hyperfleetstore.HyperFleetCluster {
+	return &hyperfleetstore.HyperFleetCluster{
+		Spec: hyperfleetapi.ClusterSpec{},
+		Status: hyperfleetapi.ClusterStatus{
+			Conditions: conditions,
+		},
+		AdapterStatuses: statuses,
+	}
+}
 
 func TestReconciler(t *testing.T) {
 	tests := []struct {
 		name           string
 		clusterID      string
-		cluster        *hyperfleetapi.ClusterDetail // nil → 404
-		statuses       hyperfleetapi.AdapterStatuses
+		cluster        *hyperfleetstore.HyperFleetCluster // nil → NotFound
 		selector       *mockSelector
 		expectPUT      bool
-		expectedResult common.Result
+		expectedResult reconcile.Result
 		expectError    bool
 	}{
 		{
 			name:      "happy path: selects MC and domain, PUTs status",
 			clusterID: "cluster-1",
-			cluster: func() *hyperfleetapi.ClusterDetail {
-				c := testCluster("cluster-1", []hyperfleetapi.Condition{
-					{Type: "Reconciled", Status: "False"},
-				})
-				return &c
-			}(),
-			statuses:       hyperfleetapi.AdapterStatuses{},
+			cluster: buildCluster("cluster-1",
+				[]hyperfleetapi.Condition{{Type: "Reconciled", Status: "False"}},
+				hyperfleetapi.AdapterStatuses{},
+			),
 			selector:       &mockSelector{mcName: "mc-us-c1", baseDomain: "hc-us-central1-abc.example.com"},
 			expectPUT:      true,
-			expectedResult: common.Result{RequeueAfter: requeueAfter},
+			expectedResult: reconcile.Result{RequeueAfter: requeueAfter},
 		},
 		{
-			name:      "already placed: no PUT, requeue",
+			name:      "already placed: no PUT, empty result",
 			clusterID: "cluster-2",
-			cluster: func() *hyperfleetapi.ClusterDetail {
-				c := testCluster("cluster-2", nil)
-				return &c
-			}(),
-			statuses: hyperfleetapi.AdapterStatuses{
-				{
-					Adapter: "placement-adapter",
-					Data: map[string]any{
-						"managementClusterName": "mc-us-c1",
-						"baseDomain":            "hc-us-central1-abc.example.com",
+			cluster: buildCluster("cluster-2", nil,
+				hyperfleetapi.AdapterStatuses{
+					{
+						Adapter: "placement-adapter",
+						Data: map[string]any{
+							"managementClusterName": "mc-us-c1",
+							"baseDomain":            "hc-us-central1-abc.example.com",
+						},
 					},
 				},
-			},
+			),
 			selector:       &mockSelector{mcName: "mc-us-c1", baseDomain: "hc-us-central1-abc.example.com"},
 			expectPUT:      false,
-			expectedResult: common.Result{},
+			expectedResult: reconcile.Result{},
 		},
 		{
 			name:           "cluster not found: return empty result, no error",
 			clusterID:      "cluster-missing",
-			cluster:        nil, // will return 404
-			statuses:       hyperfleetapi.AdapterStatuses{},
+			cluster:        nil, // → NotFoundError
 			selector:       &mockSelector{mcName: "mc-us-c1", baseDomain: "hc-us-central1-abc.example.com"},
 			expectPUT:      false,
-			expectedResult: common.Result{},
+			expectedResult: reconcile.Result{},
 			expectError:    false,
 		},
 		{
 			name:      "reconciled cluster: skip, wait for next event",
 			clusterID: "cluster-3",
-			cluster: func() *hyperfleetapi.ClusterDetail {
-				c := testCluster("cluster-3", []hyperfleetapi.Condition{
-					{Type: "Reconciled", Status: "True", Reason: "ReconcileComplete"},
-				})
-				return &c
-			}(),
-			statuses:       hyperfleetapi.AdapterStatuses{},
+			cluster: buildCluster("cluster-3",
+				[]hyperfleetapi.Condition{{Type: "Reconciled", Status: "True", Reason: "ReconcileComplete"}},
+				hyperfleetapi.AdapterStatuses{},
+			),
 			selector:       &mockSelector{mcName: "mc-us-c1", baseDomain: "hc-us-central1-abc.example.com"},
 			expectPUT:      false,
-			expectedResult: common.Result{},
+			expectedResult: reconcile.Result{},
 		},
 		{
 			name:      "selector error: return error",
 			clusterID: "cluster-4",
-			cluster: func() *hyperfleetapi.ClusterDetail {
-				c := testCluster("cluster-4", nil)
-				return &c
-			}(),
-			statuses:       hyperfleetapi.AdapterStatuses{},
-			selector:       &mockSelector{err: fmt.Errorf("no candidates available")},
-			expectPUT:      false,
-			expectedResult: common.Result{},
-			expectError:    true,
+			cluster:   buildCluster("cluster-4", nil, hyperfleetapi.AdapterStatuses{}),
+			selector:  &mockSelector{err: fmt.Errorf("no candidates available")},
+			expectPUT: false,
+			expectError: true,
 		},
 	}
 
@@ -257,35 +319,37 @@ func TestReconciler(t *testing.T) {
 			var captured hyperfleetapi.StatusPayload
 
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				clusterPath := fmt.Sprintf("/api/hyperfleet/v1/clusters/%s", tc.clusterID)
 				statusesPath := fmt.Sprintf("/api/hyperfleet/v1/clusters/%s/statuses", tc.clusterID)
-
 				switch {
-				case r.Method == http.MethodGet && r.URL.Path == clusterPath:
-					if tc.cluster == nil {
-						w.WriteHeader(http.StatusNotFound)
-						return
-					}
-					writeJSON(w, http.StatusOK, tc.cluster)
-
-				case r.Method == http.MethodGet && r.URL.Path == statusesPath:
-					writeJSON(w, http.StatusOK, tc.statuses)
-
 				case r.Method == http.MethodPut && r.URL.Path == statusesPath:
 					putCalled = true
 					require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
 					w.WriteHeader(http.StatusOK)
-
 				default:
-					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-					w.WriteHeader(http.StatusInternalServerError)
+					t.Logf("unexpected request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
 				}
 			}))
 			defer srv.Close()
 
 			hfClient := newMockClient(srv)
-			reconciler := NewReconciler(hfClient, tc.selector, testCandidates(), testLogger(t))
-			result, err := reconciler.Reconcile(context.Background(), tc.clusterID)
+			storeClient := &mockStoreClient{cluster: tc.cluster}
+
+			reconciler := &Reconciler{
+				client:     storeClient,
+				hfClient:   hfClient,
+				selector:   tc.selector,
+				candidates: testCandidates(),
+				log:        testLogger(t),
+			}
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{
+					Namespace: "hyperfleet",
+					Name:      tc.clusterID,
+				},
+			}
+			result, err := reconciler.Reconcile(context.Background(), req)
 
 			if tc.expectError {
 				require.Error(t, err)

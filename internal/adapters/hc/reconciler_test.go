@@ -2,25 +2,30 @@ package hc_test
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/hc"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/hyperfleetapi"
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/hyperfleetstore"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport/mock"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
-	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const apiVersion = "v1"
-
-// testLogger returns a no-op logger for tests.
+// testLogger returns a logger for tests.
 func testLogger(t *testing.T) logger.Logger {
 	t.Helper()
 	log, err := logger.NewLogger(logger.Config{
@@ -33,13 +38,96 @@ func testLogger(t *testing.T) logger.Logger {
 	return log
 }
 
-// clusterDetail builds a standard ClusterDetail for tests.
-func clusterDetail(name string, conditions []hyperfleetapi.Condition) hyperfleetapi.ClusterDetail {
-	return hyperfleetapi.ClusterDetail{
-		ID:         "cluster-abc",
-		Name:       name,
-		Generation: 2,
-		CreatedBy:  "alice@redhat.com",
+// mockStoreClient is a minimal client.Client backed by a fixed HyperFleetCluster.
+type mockStoreClient struct {
+	cluster *hyperfleetstore.HyperFleetCluster
+	getErr  error
+}
+
+func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+	if m.getErr != nil {
+		return m.getErr
+	}
+	if m.cluster == nil {
+		return apierrors.NewNotFound(schema.GroupResource{Resource: "cluster"}, "")
+	}
+	c, ok := obj.(*hyperfleetstore.HyperFleetCluster)
+	if !ok {
+		return fmt.Errorf("unexpected type %T", obj)
+	}
+	*c = *m.cluster
+	return nil
+}
+
+func (m *mockStoreClient) List(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
+	return nil
+}
+func (m *mockStoreClient) Create(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
+	return nil
+}
+func (m *mockStoreClient) Delete(_ context.Context, _ client.Object, _ ...client.DeleteOption) error {
+	return nil
+}
+func (m *mockStoreClient) Update(_ context.Context, _ client.Object, _ ...client.UpdateOption) error {
+	return nil
+}
+func (m *mockStoreClient) Patch(_ context.Context, _ client.Object, _ client.Patch, _ ...client.PatchOption) error {
+	return nil
+}
+func (m *mockStoreClient) DeleteAllOf(_ context.Context, _ client.Object, _ ...client.DeleteAllOfOption) error {
+	return nil
+}
+func (m *mockStoreClient) Apply(_ context.Context, _ runtime.ApplyConfiguration, _ ...client.ApplyOption) error {
+	return nil
+}
+func (m *mockStoreClient) SubResource(_ string) client.SubResourceClient { return nil }
+func (m *mockStoreClient) Status() client.SubResourceWriter              { return nil }
+func (m *mockStoreClient) Scheme() *runtime.Scheme                       { return nil }
+func (m *mockStoreClient) RESTMapper() meta.RESTMapper                   { return nil }
+func (m *mockStoreClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVersionKind, error) {
+	return schema.GroupVersionKind{}, nil
+}
+func (m *mockStoreClient) IsObjectNamespaced(_ runtime.Object) (bool, error) { return false, nil }
+
+// noopStore satisfies the store.TriggerRepoll dependency.
+type noopStore struct{}
+
+func (n *noopStore) TriggerRepoll(_ string) {}
+
+// clusterReq returns a reconcile.Request for the given cluster name.
+func clusterReq(name string) reconcile.Request {
+	return reconcile.Request{
+		NamespacedName: client.ObjectKey{Namespace: hyperfleetstore.ClusterNamespace, Name: name},
+	}
+}
+
+// readyStatuses returns AdapterStatuses with placement and VR data ready.
+func readyStatuses(version string) hyperfleetapi.AdapterStatuses {
+	return hyperfleetapi.AdapterStatuses{
+		{
+			Adapter: "placement-adapter",
+			Data: map[string]any{
+				"managementClusterName": "mc-cluster-1",
+				"baseDomain":            "example.com",
+			},
+		},
+		{
+			Adapter: "version-resolution-adapter",
+			Data: map[string]any{
+				"release_image":   "quay.io/openshift-release-dev/ocp-release:4.15.0-x86_64",
+				"release_version": version,
+				"release_channel": "stable-4.15",
+			},
+		},
+	}
+}
+
+// buildCluster creates a HyperFleetCluster for tests.
+func buildCluster(clusterID string, conditions []hyperfleetapi.Condition, statuses hyperfleetapi.AdapterStatuses) *hyperfleetstore.HyperFleetCluster {
+	c := &hyperfleetstore.HyperFleetCluster{
+		DisplayName:  "my-cluster",
+		HFGeneration: 2,
+		CreatedBy:    "alice@redhat.com",
 		Spec: hyperfleetapi.ClusterSpec{
 			InfraID:   "infra-xyz",
 			IssuerURL: "https://issuer.example.com",
@@ -71,113 +159,72 @@ func clusterDetail(name string, conditions []hyperfleetapi.Condition) hyperfleet
 		Status: hyperfleetapi.ClusterStatus{
 			Conditions: conditions,
 		},
+		AdapterStatuses: statuses,
 	}
+	c.SetName(clusterID)
+	c.SetNamespace(hyperfleetstore.ClusterNamespace)
+	return c
 }
 
-// readyStatuses returns AdapterStatuses with placement and VR data ready.
-func readyStatuses(version string) hyperfleetapi.AdapterStatuses {
-	return hyperfleetapi.AdapterStatuses{
-		{
-			Adapter: "placement-adapter",
-			Data: map[string]any{
-				"managementClusterName": "mc-cluster-1",
-				"baseDomain":            "example.com",
-			},
-		},
-		{
-			Adapter: "version-resolution-adapter",
-			Data: map[string]any{
-				"release_image":   "quay.io/openshift-release-dev/ocp-release:4.15.0-x86_64",
-				"release_version": version,
-				"release_channel": "stable-4.15",
-			},
-		},
-	}
-}
-
-// setupServer creates an httptest server with the given handler map (path -> handler).
-// Paths are matched by prefix.
-func setupServer(t *testing.T, handlers map[string]http.HandlerFunc) *httptest.Server {
+// buildReconciler wires up an hc.Reconciler backed by the store client and transport mock.
+func buildReconciler(
+	t *testing.T,
+	cluster *hyperfleetstore.HyperFleetCluster,
+	tr *mock.Client,
+	putCapture *bool,
+) *hc.Reconciler {
 	t.Helper()
-	mux := http.NewServeMux()
-	for path, handler := range handlers {
-		mux.HandleFunc(path, handler)
-	}
-	return httptest.NewServer(mux)
-}
 
-func jsonResponse(t *testing.T, w http.ResponseWriter, v any) {
-	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	require.NoError(t, json.NewEncoder(w).Encode(v))
+	hfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			*putCapture = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(hfSrv.Close)
+
+	apiClient := hyperfleetapi.New(hfSrv.URL, "v1", testLogger(t))
+	storeClient := &mockStoreClient{cluster: cluster}
+	return hc.New(apiClient, tr, testLogger(t), storeClient, &noopStore{})
 }
 
 // TestReconcile_HappyPath verifies the full reconcile path when all dependencies are ready.
 func TestReconcile_HappyPath(t *testing.T) {
-	ctx := context.Background()
 	clusterID := "cluster-abc"
 	mwName := clusterID + "-hc-adapter"
 	mcName := "mc-cluster-1"
 
-	detail := clusterDetail("my-cluster", nil)
-	statuses := readyStatuses("4.15.0")
+	cluster := buildCluster(clusterID, nil, readyStatuses("4.15.0"))
 
-	putCalled := false
-
-	server := setupServer(t, map[string]http.HandlerFunc{
-		"/api/hyperfleet/v1/clusters/" + clusterID: func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet && !strings.HasSuffix(r.URL.Path, "/statuses") {
-				jsonResponse(t, w, detail)
-			}
+	tr := mock.New()
+	tr.StatusOverrides[mcName+"/"+mwName] = &transport.ManifestWorkStatus{
+		Conditions: []metav1.Condition{
+			{Type: "Applied", Status: metav1.ConditionTrue, LastTransitionTime: metav1.Now()},
 		},
-		"/api/hyperfleet/v1/clusters/" + clusterID + "/statuses": func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodGet:
-				jsonResponse(t, w, map[string]any{"items": statuses})
-			case http.MethodPut:
-				putCalled = true
-				w.WriteHeader(http.StatusNoContent)
-			}
-		},
-	})
-	defer server.Close()
-
-	apiClient := hyperfleetapi.New(server.URL, apiVersion, testLogger(t))
-	mockTransport := mock.New()
-
-	// Inject a ManifestWork status with Applied + Available conditions.
-	applied := metav1.ConditionTrue
-	appliedCond := metav1.Condition{Type: "Applied", Status: metav1.ConditionStatus(applied), LastTransitionTime: metav1.Now()}
-	mockTransport.StatusOverrides[mcName+"/"+mwName] = &transport.ManifestWorkStatus{
-		Conditions: []metav1.Condition{appliedCond},
 		ResourceStatuses: []map[string]string{
 			{}, {}, {}, // indices 0-2
 			{"availableCondition": "True", "degradedCondition": "False"}, // index 3 = HC
-			{}, // index 4 = Job
 		},
 	}
 
-	r := hc.New(apiClient, mockTransport, testLogger(t))
-	result, err := r.Reconcile(ctx, clusterID)
+	var putCalled bool
+	r := buildReconciler(t, cluster, tr, &putCalled)
+
+	result, err := r.Reconcile(context.Background(), clusterReq(clusterID))
 	require.NoError(t, err)
 	require.Equal(t, 5*time.Minute, result.RequeueAfter)
 
-	// Verify Apply was called.
-	require.Len(t, mockTransport.ApplyCalls, 1)
-	require.Equal(t, mcName, mockTransport.ApplyCalls[0].TargetCluster)
-	require.Equal(t, mwName, mockTransport.ApplyCalls[0].Work.Name)
-
-	// Verify PUT status was called.
+	require.Len(t, tr.ApplyCalls, 1)
+	require.Equal(t, mcName, tr.ApplyCalls[0].TargetCluster)
+	require.Equal(t, mwName, tr.ApplyCalls[0].Work.Name)
 	require.True(t, putCalled, "expected PutClusterStatus to be called")
 }
 
 // TestReconcile_DependenciesNotReady_NoPlacement verifies requeue when placement is missing.
 func TestReconcile_DependenciesNotReady_NoPlacement(t *testing.T) {
-	ctx := context.Background()
 	clusterID := "cluster-abc"
-	detail := clusterDetail("my-cluster", nil)
-
-	// Statuses without placement adapter.
 	statusesNoPlacement := hyperfleetapi.AdapterStatuses{
 		{
 			Adapter: "version-resolution-adapter",
@@ -188,114 +235,59 @@ func TestReconcile_DependenciesNotReady_NoPlacement(t *testing.T) {
 			},
 		},
 	}
+	cluster := buildCluster(clusterID, nil, statusesNoPlacement)
 
-	server := setupServer(t, map[string]http.HandlerFunc{
-		"/api/hyperfleet/v1/clusters/" + clusterID: func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasSuffix(r.URL.Path, "/statuses") {
-				jsonResponse(t, w, detail)
-			}
-		},
-		"/api/hyperfleet/v1/clusters/" + clusterID + "/statuses": func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet {
-				jsonResponse(t, w, map[string]any{"items": statusesNoPlacement})
-			}
-		},
-	})
-	defer server.Close()
+	tr := mock.New()
+	var putCalled bool
+	r := buildReconciler(t, cluster, tr, &putCalled)
 
-	apiClient := hyperfleetapi.New(server.URL, apiVersion, testLogger(t))
-	mockTransport := mock.New()
-
-	r := hc.New(apiClient, mockTransport, testLogger(t))
-	result, err := r.Reconcile(ctx, clusterID)
+	result, err := r.Reconcile(context.Background(), clusterReq(clusterID))
 	require.NoError(t, err)
 	require.Equal(t, time.Duration(0), result.RequeueAfter)
-
-	// Apply should NOT have been called.
-	require.Empty(t, mockTransport.ApplyCalls)
+	require.Empty(t, tr.ApplyCalls)
 }
 
 // TestReconcile_DependenciesNotReady_VRVersionMismatch verifies requeue when VR version doesn't match.
 func TestReconcile_DependenciesNotReady_VRVersionMismatch(t *testing.T) {
-	ctx := context.Background()
 	clusterID := "cluster-abc"
-
 	// Cluster wants 4.15.0 but VR resolved 4.14.9.
-	detail := clusterDetail("my-cluster", nil)
-	statusesWrongVR := readyStatuses("4.14.9") // mismatch
+	cluster := buildCluster(clusterID, nil, readyStatuses("4.14.9"))
 
-	server := setupServer(t, map[string]http.HandlerFunc{
-		"/api/hyperfleet/v1/clusters/" + clusterID: func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasSuffix(r.URL.Path, "/statuses") {
-				jsonResponse(t, w, detail)
-			}
-		},
-		"/api/hyperfleet/v1/clusters/" + clusterID + "/statuses": func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet {
-				jsonResponse(t, w, map[string]any{"items": statusesWrongVR})
-			}
-		},
-	})
-	defer server.Close()
+	tr := mock.New()
+	var putCalled bool
+	r := buildReconciler(t, cluster, tr, &putCalled)
 
-	apiClient := hyperfleetapi.New(server.URL, apiVersion, testLogger(t))
-	mockTransport := mock.New()
-
-	r := hc.New(apiClient, mockTransport, testLogger(t))
-	result, err := r.Reconcile(ctx, clusterID)
+	result, err := r.Reconcile(context.Background(), clusterReq(clusterID))
 	require.NoError(t, err)
 	require.Equal(t, time.Duration(0), result.RequeueAfter)
-
-	require.Empty(t, mockTransport.ApplyCalls)
+	require.Empty(t, tr.ApplyCalls)
 }
 
 // TestReconcile_ClusterNotFound verifies that a 404 returns empty Result with no error.
 func TestReconcile_ClusterNotFound(t *testing.T) {
-	ctx := context.Background()
-	clusterID := "cluster-missing"
+	tr := mock.New()
+	var putCalled bool
+	r := buildReconciler(t, nil, tr, &putCalled) // nil cluster → NotFound
 
-	server := setupServer(t, map[string]http.HandlerFunc{
-		"/api/hyperfleet/v1/clusters/" + clusterID: func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNotFound)
-		},
-	})
-	defer server.Close()
-
-	apiClient := hyperfleetapi.New(server.URL, apiVersion, testLogger(t))
-	mockTransport := mock.New()
-
-	r := hc.New(apiClient, mockTransport, testLogger(t))
-	result, err := r.Reconcile(ctx, clusterID)
+	result, err := r.Reconcile(context.Background(), clusterReq("cluster-missing"))
 	require.NoError(t, err)
 	require.Zero(t, result.RequeueAfter)
+	require.Empty(t, tr.ApplyCalls)
 }
 
 // TestReconcile_AlreadyReconciled verifies that a cluster with Reconciled=True is skipped.
 func TestReconcile_AlreadyReconciled(t *testing.T) {
-	ctx := context.Background()
 	clusterID := "cluster-abc"
-
 	reconciledConditions := []hyperfleetapi.Condition{
 		{Type: "Reconciled", Status: "True", Reason: "Done"},
 	}
-	detail := clusterDetail("my-cluster", reconciledConditions)
+	cluster := buildCluster(clusterID, reconciledConditions, readyStatuses("4.15.0"))
 
-	server := setupServer(t, map[string]http.HandlerFunc{
-		"/api/hyperfleet/v1/clusters/" + clusterID: func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasSuffix(r.URL.Path, "/statuses") {
-				jsonResponse(t, w, detail)
-			}
-		},
-	})
-	defer server.Close()
+	tr := mock.New()
+	var putCalled bool
+	r := buildReconciler(t, cluster, tr, &putCalled)
 
-	apiClient := hyperfleetapi.New(server.URL, apiVersion, testLogger(t))
-	mockTransport := mock.New()
-
-	r := hc.New(apiClient, mockTransport, testLogger(t))
-	_, err := r.Reconcile(ctx, clusterID)
+	_, err := r.Reconcile(context.Background(), clusterReq(clusterID))
 	require.NoError(t, err)
-
-	// No Apply or GetStatus should have been called.
-	require.Empty(t, mockTransport.ApplyCalls)
+	require.Empty(t, tr.ApplyCalls)
 }
