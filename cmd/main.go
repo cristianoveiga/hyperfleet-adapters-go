@@ -163,7 +163,8 @@ func newVersionResolutionCmd(rf *rootFlags) *cobra.Command {
 			subscriber := pubsubpkg.New(sub, q, zapSugared)
 
 			go subscriber.Run(ctx)
-			workerqueue.Run(ctx, rf.workers, q, rec.Reconcile, zapSugared)
+			// TODO(step8): replace with controller-runtime Manager wiring.
+			workerqueue.Run(ctx, rf.workers, q, rec.ReconcileByID, zapSugared)
 			return nil
 		},
 	}
@@ -212,7 +213,8 @@ func newNodepoolVRCmd(rf *rootFlags) *cobra.Command {
 			subscriber := pubsubpkg.New(sub, q, zapSugared)
 
 			go subscriber.Run(ctx)
-			workerqueue.Run(ctx, rf.workers, q, rec.Reconcile, zapSugared)
+			// TODO(step8): replace with controller-runtime Manager wiring.
+			workerqueue.Run(ctx, rf.workers, q, rec.ReconcileByID, zapSugared)
 			return nil
 		},
 	}
@@ -292,7 +294,8 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 			subscriber := pubsubpkg.New(sub, q, zapSugared)
 
 			go subscriber.Run(ctx)
-			workerqueue.Run(ctx, rf.workers, q, rec.Reconcile, zapSugared)
+			// TODO(step8): replace with controller-runtime Manager wiring.
+			workerqueue.Run(ctx, rf.workers, q, rec.ReconcileByID, zapSugared)
 			return nil
 		},
 	}
@@ -355,7 +358,8 @@ func newHCCmd(rf *rootFlags) *cobra.Command {
 			subscriber := pubsubpkg.New(sub, q, zapSugared)
 
 			go subscriber.Run(ctx)
-			workerqueue.Run(ctx, rf.workers, q, rec.Reconcile, zapSugared)
+			// TODO(step8): replace with controller-runtime Manager wiring.
+			workerqueue.Run(ctx, rf.workers, q, rec.ReconcileByID, zapSugared)
 			return nil
 		},
 	}
@@ -419,7 +423,8 @@ func newNodepoolCmd(rf *rootFlags) *cobra.Command {
 			subscriber := pubsubpkg.New(sub, q, zapSugared)
 
 			go subscriber.Run(ctx)
-			workerqueue.Run(ctx, rf.workers, q, rec.Reconcile, zapSugared)
+			// TODO(step8): replace with controller-runtime Manager wiring.
+			workerqueue.Run(ctx, rf.workers, q, rec.ReconcileByKey, zapSugared)
 			return nil
 		},
 	}
