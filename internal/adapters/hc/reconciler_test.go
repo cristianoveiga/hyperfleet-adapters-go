@@ -89,11 +89,6 @@ func (m *mockStoreClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVer
 }
 func (m *mockStoreClient) IsObjectNamespaced(_ runtime.Object) (bool, error) { return false, nil }
 
-// noopStore satisfies the store.TriggerRepoll dependency.
-type noopStore struct{}
-
-func (n *noopStore) TriggerRepoll(_ string) {}
-
 // clusterReq returns a reconcile.Request for the given cluster name.
 func clusterReq(name string) reconcile.Request {
 	return reconcile.Request{
@@ -187,7 +182,7 @@ func buildReconciler(
 
 	apiClient := hyperfleetapi.New(hfSrv.URL, "v1", testLogger(t))
 	storeClient := &mockStoreClient{cluster: cluster}
-	return hc.New(apiClient, tr, testLogger(t), storeClient, &noopStore{})
+	return hc.New(apiClient, tr, testLogger(t), storeClient)
 }
 
 // TestReconcile_HappyPath verifies the full reconcile path when all dependencies are ready.

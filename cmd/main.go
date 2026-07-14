@@ -6,13 +6,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	gogopubsub "cloud.google.com/go/pubsub/v2"
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"github.com/spf13/cobra"
-	"go.uber.org/zap"
-	"k8s.io/client-go/util/workqueue"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 
 	hcadapter "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/hc"
 	nodepooladapter "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/nodepool"
@@ -20,8 +20,7 @@ import (
 	placementadapter "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/placement"
 	versionresolution "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/versionresolution"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/hyperfleetapi"
-	pubsubpkg "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/pubsub"
-	workerqueue "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/workqueue"
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/hyperfleetstore"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/maestroclient"
 	maestrotransport "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport/maestro"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
@@ -33,23 +32,17 @@ type rootFlags struct {
 	logFormat  string
 	apiURL     string
 	apiVersion string
+	orlopURL   string
 	workers    int
-	resync     time.Duration
-}
-
-// pubsubFlags holds the common pub/sub flags shared by all subcommands.
-type pubsubFlags struct {
-	pubsubProject string
-	subscription  string
 }
 
 // maestroFlags holds Maestro-related flags shared by hc and nodepool subcommands.
 type maestroFlags struct {
-	grpcAddr  string
-	httpAddr  string
-	sourceID  string
-	clientID  string
-	insecure  bool
+	grpcAddr string
+	httpAddr string
+	sourceID string
+	clientID string
+	insecure bool
 }
 
 // envOr returns the value of the environment variable named by key, or
@@ -67,8 +60,6 @@ func main() {
 	root := &cobra.Command{
 		Use:   "hyperfleet-adapters-go",
 		Short: "HyperFleet Go adapters",
-		// PersistentPreRun applies environment-variable overrides to root flags
-		// before any subcommand runs.
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			if v := envOr("LOG_LEVEL", ""); v != "" && !cmd.Flags().Changed("log-level") {
 				rf.logLevel = v
@@ -82,16 +73,18 @@ func main() {
 			if v := envOr("API_VERSION", ""); v != "" && !cmd.Flags().Changed("api-version") {
 				rf.apiVersion = v
 			}
+			if v := envOr("ORLOP_URL", ""); v != "" && !cmd.Flags().Changed("orlop-url") {
+				rf.orlopURL = v
+			}
 		},
 	}
 
-	// Root persistent flags.
 	root.PersistentFlags().StringVar(&rf.logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	root.PersistentFlags().StringVar(&rf.logFormat, "log-format", "json", "Log format (json, text)")
-	root.PersistentFlags().StringVar(&rf.apiURL, "api-url", "http://hyperfleet-api:8000", "HyperFleet API base URL [$HYPERFLEET_API_URL]")
+	root.PersistentFlags().StringVar(&rf.apiURL, "api-url", "http://hyperfleet-api:8000", "HyperFleet API base URL for status writes [$HYPERFLEET_API_URL]")
 	root.PersistentFlags().StringVar(&rf.apiVersion, "api-version", "v1", "HyperFleet API version")
-	root.PersistentFlags().IntVar(&rf.workers, "workers", 10, "Number of worker goroutines")
-	root.PersistentFlags().DurationVar(&rf.resync, "resync", 5*time.Minute, "Resync period")
+	root.PersistentFlags().StringVar(&rf.orlopURL, "orlop-url", "http://hyperfleet-api:8080", "Orlop API server URL for resource reads/watches [$ORLOP_URL]")
+	root.PersistentFlags().IntVar(&rf.workers, "workers", 10, "Concurrent reconcile goroutines")
 
 	root.AddCommand(
 		newVersionResolutionCmd(rf),
@@ -120,27 +113,37 @@ func newLogger(rf *rootFlags, component string) (logger.Logger, error) {
 	})
 }
 
-// newZapSugared creates a zap sugared logger for pubsub/workqueue internals.
-func newZapSugared() *zap.SugaredLogger {
-	zapLogger, _ := zap.NewProduction()
-	return zapLogger.Sugar()
+// newScheme creates a runtime.Scheme with HyperFleet types registered.
+func newScheme() *runtime.Scheme {
+	scheme := runtime.NewScheme()
+	if err := hyperfleetstore.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("failed to register HyperFleet types: %v", err))
+	}
+	return scheme
+}
+
+// newManager creates a controller-runtime Manager pointed at the orlop API server.
+func newManager(rf *rootFlags, scheme *runtime.Scheme) (ctrl.Manager, error) {
+	return ctrl.NewManager(&rest.Config{Host: rf.orlopURL}, ctrl.Options{
+		Scheme:         scheme,
+		LeaderElection: false,
+	})
+}
+
+// controllerOpts returns per-controller options derived from root flags.
+func controllerOpts(rf *rootFlags) controller.Options {
+	return controller.Options{MaxConcurrentReconciles: rf.workers}
 }
 
 // ─── version-resolution ──────────────────────────────────────────────────────
 
 func newVersionResolutionCmd(rf *rootFlags) *cobra.Command {
-	psf := &pubsubFlags{}
 	var cincinnatiURL, arch string
 
 	cmd := &cobra.Command{
 		Use:   "version-resolution",
 		Short: "Run the version-resolution adapter",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Apply env overrides for adapter-specific flags.
-			if v := envOr("PUBSUB_PROJECT", ""); v != "" && !cmd.Flags().Changed("pubsub-project") {
-				psf.pubsubProject = v
-			}
-
 			ctx := cmd.Context()
 
 			log, err := newLogger(rf, "version-resolution-adapter")
@@ -148,29 +151,27 @@ func newVersionResolutionCmd(rf *rootFlags) *cobra.Command {
 				return fmt.Errorf("create logger: %w", err)
 			}
 
+			scheme := newScheme()
+			mgr, err := newManager(rf, scheme)
+			if err != nil {
+				return fmt.Errorf("create manager: %w", err)
+			}
+
 			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
 			cinClient := versionresolution.NewCincinnatiClient(cincinnatiURL, arch)
-			rec := versionresolution.NewReconciler(hfClient, cinClient, log)
+			rec := versionresolution.NewReconciler(hfClient, cinClient, log, mgr.GetClient())
 
-			q := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
-			zapSugared := newZapSugared()
-
-			psClient, err := gogopubsub.NewClient(ctx, psf.pubsubProject)
-			if err != nil {
-				return fmt.Errorf("create pubsub client: %w", err)
+			if err := ctrl.NewControllerManagedBy(mgr).
+				For(&hyperfleetstore.HyperFleetCluster{}).
+				WithOptions(controllerOpts(rf)).
+				Complete(rec); err != nil {
+				return fmt.Errorf("setup controller: %w", err)
 			}
-			sub := psClient.Subscriber(psf.subscription)
-			subscriber := pubsubpkg.New(sub, q, zapSugared)
 
-			go subscriber.Run(ctx)
-			// TODO(step8): replace with controller-runtime Manager wiring.
-			workerqueue.Run(ctx, rf.workers, q, rec.ReconcileByID, zapSugared)
-			return nil
+			return mgr.Start(ctx)
 		},
 	}
 
-	cmd.Flags().StringVar(&psf.pubsubProject, "pubsub-project", "", "GCP project for Pub/Sub [$PUBSUB_PROJECT]")
-	cmd.Flags().StringVar(&psf.subscription, "subscription", "hyperfleet-cluster-events-vr-adapter", "Pub/Sub subscription name")
 	cmd.Flags().StringVar(&cincinnatiURL, "cincinnati-url", "https://api.openshift.com/api/upgrades_info/v1/graph", "Cincinnati API URL")
 	cmd.Flags().StringVar(&arch, "arch", "amd64", "CPU architecture for Cincinnati query")
 
@@ -180,17 +181,12 @@ func newVersionResolutionCmd(rf *rootFlags) *cobra.Command {
 // ─── nodepool-vr ─────────────────────────────────────────────────────────────
 
 func newNodepoolVRCmd(rf *rootFlags) *cobra.Command {
-	psf := &pubsubFlags{}
 	var cincinnatiURL, arch string
 
 	cmd := &cobra.Command{
 		Use:   "nodepool-vr",
 		Short: "Run the nodepool version-resolution adapter",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if v := envOr("PUBSUB_PROJECT", ""); v != "" && !cmd.Flags().Changed("pubsub-project") {
-				psf.pubsubProject = v
-			}
-
 			ctx := cmd.Context()
 
 			log, err := newLogger(rf, "nodepool-vr-adapter")
@@ -198,29 +194,27 @@ func newNodepoolVRCmd(rf *rootFlags) *cobra.Command {
 				return fmt.Errorf("create logger: %w", err)
 			}
 
+			scheme := newScheme()
+			mgr, err := newManager(rf, scheme)
+			if err != nil {
+				return fmt.Errorf("create manager: %w", err)
+			}
+
 			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
 			cinClient := versionresolution.NewCincinnatiClient(cincinnatiURL, arch)
-			rec := nodepoolvrresolution.NewReconciler(hfClient, cinClient, log)
+			rec := nodepoolvrresolution.NewReconciler(hfClient, cinClient, log, mgr.GetClient())
 
-			q := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
-			zapSugared := newZapSugared()
-
-			psClient, err := gogopubsub.NewClient(ctx, psf.pubsubProject)
-			if err != nil {
-				return fmt.Errorf("create pubsub client: %w", err)
+			if err := ctrl.NewControllerManagedBy(mgr).
+				For(&hyperfleetstore.HyperFleetNodePool{}).
+				WithOptions(controllerOpts(rf)).
+				Complete(rec); err != nil {
+				return fmt.Errorf("setup controller: %w", err)
 			}
-			sub := psClient.Subscriber(psf.subscription)
-			subscriber := pubsubpkg.New(sub, q, zapSugared)
 
-			go subscriber.Run(ctx)
-			// TODO(step8): replace with controller-runtime Manager wiring.
-			workerqueue.Run(ctx, rf.workers, q, rec.ReconcileByID, zapSugared)
-			return nil
+			return mgr.Start(ctx)
 		},
 	}
 
-	cmd.Flags().StringVar(&psf.pubsubProject, "pubsub-project", "", "GCP project for Pub/Sub [$PUBSUB_PROJECT]")
-	cmd.Flags().StringVar(&psf.subscription, "subscription", "hyperfleet-nodepool-events-nodepool-vr-adapter", "Pub/Sub subscription name")
 	cmd.Flags().StringVar(&cincinnatiURL, "cincinnati-url", "https://api.openshift.com/api/upgrades_info/v1/graph", "Cincinnati API URL")
 	cmd.Flags().StringVar(&arch, "arch", "amd64", "CPU architecture for Cincinnati query")
 
@@ -230,7 +224,6 @@ func newNodepoolVRCmd(rf *rootFlags) *cobra.Command {
 // ─── placement ───────────────────────────────────────────────────────────────
 
 func newPlacementCmd(rf *rootFlags) *cobra.Command {
-	psf := &pubsubFlags{}
 	var candidateNames, baseDomains []string
 	var smProject, maestroHTTPAddr string
 
@@ -238,9 +231,6 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 		Use:   "placement",
 		Short: "Run the placement adapter",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if v := envOr("PUBSUB_PROJECT", ""); v != "" && !cmd.Flags().Changed("pubsub-project") {
-				psf.pubsubProject = v
-			}
 			if v := envOr("SECRETMANAGER_PROJECT", ""); v != "" && !cmd.Flags().Changed("secretmanager-project") {
 				smProject = v
 			}
@@ -261,7 +251,6 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 			var candidates []placementadapter.Candidate
 
 			if smProject != "" {
-				// Dynamic mode: discover MCs and DNS zones from Secret Manager + Maestro.
 				smClient, err := secretmanager.NewClient(ctx)
 				if err != nil {
 					return fmt.Errorf("create secret manager client: %w", err)
@@ -269,7 +258,6 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 				defer smClient.Close() //nolint:errcheck
 				selector = placementadapter.NewDynamicSelector(smClient, smProject, maestroHTTPAddr)
 			} else {
-				// Static mode: use explicitly provided --candidates / --base-domains.
 				candidates = make([]placementadapter.Candidate, 0, len(candidateNames))
 				for i, name := range candidateNames {
 					c := placementadapter.Candidate{Name: name}
@@ -281,29 +269,27 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 				selector = placementadapter.NewRoundRobinSelector()
 			}
 
-			rec := placementadapter.NewReconciler(hfClient, selector, candidates, log)
-
-			q := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
-			zapSugared := newZapSugared()
-
-			psClient, err := gogopubsub.NewClient(ctx, psf.pubsubProject)
+			scheme := newScheme()
+			mgr, err := newManager(rf, scheme)
 			if err != nil {
-				return fmt.Errorf("create pubsub client: %w", err)
+				return fmt.Errorf("create manager: %w", err)
 			}
-			sub := psClient.Subscriber(psf.subscription)
-			subscriber := pubsubpkg.New(sub, q, zapSugared)
 
-			go subscriber.Run(ctx)
-			// TODO(step8): replace with controller-runtime Manager wiring.
-			workerqueue.Run(ctx, rf.workers, q, rec.ReconcileByID, zapSugared)
-			return nil
+			rec := placementadapter.NewReconciler(hfClient, selector, candidates, log, mgr.GetClient())
+
+			if err := ctrl.NewControllerManagedBy(mgr).
+				For(&hyperfleetstore.HyperFleetCluster{}).
+				WithOptions(controllerOpts(rf)).
+				Complete(rec); err != nil {
+				return fmt.Errorf("setup controller: %w", err)
+			}
+
+			return mgr.Start(ctx)
 		},
 	}
 
-	cmd.Flags().StringVar(&psf.pubsubProject, "pubsub-project", "", "GCP project for Pub/Sub [$PUBSUB_PROJECT]")
-	cmd.Flags().StringVar(&psf.subscription, "subscription", "hyperfleet-cluster-events-placement-adapter", "Pub/Sub subscription name")
 	cmd.Flags().StringSliceVar(&candidateNames, "candidates", nil, "MC names (comma-separated); ignored when --secretmanager-project is set")
-	cmd.Flags().StringSliceVar(&baseDomains, "base-domains", nil, "Base domains per MC, paired with --candidates; ignored when --secretmanager-project is set")
+	cmd.Flags().StringSliceVar(&baseDomains, "base-domains", nil, "Base domains per MC, paired with --candidates")
 	cmd.Flags().StringVar(&smProject, "secretmanager-project", "", "GCP project for Secret Manager MC/DNS discovery [$SECRETMANAGER_PROJECT]; enables dynamic selector")
 	cmd.Flags().StringVar(&maestroHTTPAddr, "maestro-http-addr", "http://maestro.hyperfleet.svc.cluster.local:8000", "Maestro HTTP API URL for consumer discovery [$MAESTRO_HTTP_ADDR]")
 
@@ -313,17 +299,12 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 // ─── hc ──────────────────────────────────────────────────────────────────────
 
 func newHCCmd(rf *rootFlags) *cobra.Command {
-	psf := &pubsubFlags{}
 	mf := &maestroFlags{}
 
 	cmd := &cobra.Command{
 		Use:   "hc",
 		Short: "Run the hosted-cluster (hc) adapter",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if v := envOr("PUBSUB_PROJECT", ""); v != "" && !cmd.Flags().Changed("pubsub-project") {
-				psf.pubsubProject = v
-			}
-
 			ctx := cmd.Context()
 
 			log, err := newLogger(rf, "hc-adapter")
@@ -344,28 +325,26 @@ func newHCCmd(rf *rootFlags) *cobra.Command {
 
 			transport := maestrotransport.New(mwc, mf.sourceID, log)
 
-			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
-			rec := hcadapter.New(hfClient, transport, log)
-
-			q := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
-			zapSugared := newZapSugared()
-
-			psClient, err := gogopubsub.NewClient(ctx, psf.pubsubProject)
+			scheme := newScheme()
+			mgr, err := newManager(rf, scheme)
 			if err != nil {
-				return fmt.Errorf("create pubsub client: %w", err)
+				return fmt.Errorf("create manager: %w", err)
 			}
-			sub := psClient.Subscriber(psf.subscription)
-			subscriber := pubsubpkg.New(sub, q, zapSugared)
 
-			go subscriber.Run(ctx)
-			// TODO(step8): replace with controller-runtime Manager wiring.
-			workerqueue.Run(ctx, rf.workers, q, rec.ReconcileByID, zapSugared)
-			return nil
+			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
+			rec := hcadapter.New(hfClient, transport, log, mgr.GetClient())
+
+			if err := ctrl.NewControllerManagedBy(mgr).
+				For(&hyperfleetstore.HyperFleetCluster{}).
+				WithOptions(controllerOpts(rf)).
+				Complete(rec); err != nil {
+				return fmt.Errorf("setup controller: %w", err)
+			}
+
+			return mgr.Start(ctx)
 		},
 	}
 
-	cmd.Flags().StringVar(&psf.pubsubProject, "pubsub-project", "", "GCP project for Pub/Sub [$PUBSUB_PROJECT]")
-	cmd.Flags().StringVar(&psf.subscription, "subscription", "hyperfleet-cluster-events-hc-adapter", "Pub/Sub subscription name")
 	cmd.Flags().StringVar(&mf.grpcAddr, "maestro-grpc-addr", "maestro-grpc.hyperfleet.svc.cluster.local:8090", "Maestro gRPC server address")
 	cmd.Flags().StringVar(&mf.httpAddr, "maestro-http-addr", "http://maestro.hyperfleet.svc.cluster.local:8000", "Maestro HTTP API server address")
 	cmd.Flags().StringVar(&mf.sourceID, "maestro-source-id", "hc-adapter", "Maestro source ID")
@@ -378,17 +357,12 @@ func newHCCmd(rf *rootFlags) *cobra.Command {
 // ─── nodepool ────────────────────────────────────────────────────────────────
 
 func newNodepoolCmd(rf *rootFlags) *cobra.Command {
-	psf := &pubsubFlags{}
 	mf := &maestroFlags{}
 
 	cmd := &cobra.Command{
 		Use:   "nodepool",
 		Short: "Run the nodepool adapter",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if v := envOr("PUBSUB_PROJECT", ""); v != "" && !cmd.Flags().Changed("pubsub-project") {
-				psf.pubsubProject = v
-			}
-
 			ctx := cmd.Context()
 
 			log, err := newLogger(rf, "nodepool-adapter")
@@ -409,28 +383,26 @@ func newNodepoolCmd(rf *rootFlags) *cobra.Command {
 
 			transport := maestrotransport.New(mwc, mf.sourceID, log)
 
-			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
-			rec := nodepooladapter.New(hfClient, transport, log)
-
-			q := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
-			zapSugared := newZapSugared()
-
-			psClient, err := gogopubsub.NewClient(ctx, psf.pubsubProject)
+			scheme := newScheme()
+			mgr, err := newManager(rf, scheme)
 			if err != nil {
-				return fmt.Errorf("create pubsub client: %w", err)
+				return fmt.Errorf("create manager: %w", err)
 			}
-			sub := psClient.Subscriber(psf.subscription)
-			subscriber := pubsubpkg.New(sub, q, zapSugared)
 
-			go subscriber.Run(ctx)
-			// TODO(step8): replace with controller-runtime Manager wiring.
-			workerqueue.Run(ctx, rf.workers, q, rec.ReconcileByKey, zapSugared)
-			return nil
+			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
+			rec := nodepooladapter.New(hfClient, transport, log, mgr.GetClient())
+
+			if err := ctrl.NewControllerManagedBy(mgr).
+				For(&hyperfleetstore.HyperFleetNodePool{}).
+				WithOptions(controllerOpts(rf)).
+				Complete(rec); err != nil {
+				return fmt.Errorf("setup controller: %w", err)
+			}
+
+			return mgr.Start(ctx)
 		},
 	}
 
-	cmd.Flags().StringVar(&psf.pubsubProject, "pubsub-project", "", "GCP project for Pub/Sub [$PUBSUB_PROJECT]")
-	cmd.Flags().StringVar(&psf.subscription, "subscription", "hyperfleet-nodepool-events-nodepool-adapter", "Pub/Sub subscription name")
 	cmd.Flags().StringVar(&mf.grpcAddr, "maestro-grpc-addr", "maestro-grpc.hyperfleet.svc.cluster.local:8090", "Maestro gRPC server address")
 	cmd.Flags().StringVar(&mf.httpAddr, "maestro-http-addr", "http://maestro.hyperfleet.svc.cluster.local:8000", "Maestro HTTP API server address")
 	cmd.Flags().StringVar(&mf.sourceID, "maestro-source-id", "nodepool-adapter", "Maestro source ID")
@@ -439,3 +411,4 @@ func newNodepoolCmd(rf *rootFlags) *cobra.Command {
 
 	return cmd
 }
+

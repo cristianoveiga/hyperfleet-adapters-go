@@ -29,17 +29,15 @@ type Reconciler struct {
 	cincinnati *versionresolution.CincinnatiClient
 	log        logger.Logger
 	client     client.Client
-	store      interface{ TriggerRepoll(clusterID string) }
 }
 
 // NewReconciler creates a new nodepool-vr Reconciler.
-func NewReconciler(hfClient hyperfleetapi.Client, cincinnati *versionresolution.CincinnatiClient, log logger.Logger, c client.Client, store interface{ TriggerRepoll(clusterID string) }) *Reconciler {
+func NewReconciler(hfClient hyperfleetapi.Client, cincinnati *versionresolution.CincinnatiClient, log logger.Logger, c client.Client) *Reconciler {
 	return &Reconciler{
 		hfClient:   hfClient,
 		cincinnati: cincinnati,
 		log:        log,
 		client:     c,
-		store:      store,
 	}
 }
 
@@ -131,10 +129,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	if err := r.hfClient.PutNodePoolStatus(ctx, clusterID, nodepoolID, payload); err != nil {
 		return reconcile.Result{}, fmt.Errorf("nodepool-vr: put nodepool status %s: %w", nodepoolID, err)
-	}
-
-	if r.store != nil {
-		r.store.TriggerRepoll(clusterID)
 	}
 
 	r.log.Infof(ctx, "nodepool-vr: nodepool %s: resolved version %s", nodepoolID, version)

@@ -33,17 +33,15 @@ type Reconciler struct {
 	transport transport.Client
 	log       logger.Logger
 	client    client.Client
-	store     interface{ TriggerRepoll(clusterID string) }
 }
 
 // New creates a new Reconciler.
-func New(api hyperfleetapi.Client, transport transport.Client, log logger.Logger, c client.Client, store interface{ TriggerRepoll(clusterID string) }) *Reconciler {
+func New(api hyperfleetapi.Client, transport transport.Client, log logger.Logger, c client.Client) *Reconciler {
 	return &Reconciler{
 		api:       api,
 		transport: transport,
 		log:       log,
 		client:    c,
-		store:     store,
 	}
 }
 
@@ -132,9 +130,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("%s: put cluster status: %w", adapterName, err)
 	}
 
-	if r.store != nil {
-		r.store.TriggerRepoll(clusterID)
-	}
 
 	log.Infof(ctx, "hc-adapter: cluster %s reconciled, requeueing after %s", clusterID, requeueReady)
 	return reconcile.Result{RequeueAfter: requeueReady}, nil

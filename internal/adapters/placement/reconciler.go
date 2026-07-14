@@ -25,21 +25,19 @@ const (
 type Reconciler struct {
 	client     client.Client
 	hfClient   hyperfleetapi.Client
-	store      interface{ TriggerRepoll(clusterID string) }
 	selector   Selector
 	candidates []Candidate
 	log        logger.Logger
 }
 
 // NewReconciler creates a new placement Reconciler.
-func NewReconciler(hfClient hyperfleetapi.Client, selector Selector, candidates []Candidate, log logger.Logger, c client.Client, store interface{ TriggerRepoll(clusterID string) }) *Reconciler {
+func NewReconciler(hfClient hyperfleetapi.Client, selector Selector, candidates []Candidate, log logger.Logger, c client.Client) *Reconciler {
 	return &Reconciler{
 		hfClient:   hfClient,
 		selector:   selector,
 		candidates: candidates,
 		log:        log,
 		client:     c,
-		store:      store,
 	}
 }
 
@@ -117,12 +115,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("placement: put cluster status for %s: %w", clusterID, err)
 	}
 
-	// Step 6: Signal the polling loop to immediately re-fetch this cluster.
-	if r.store != nil {
-		r.store.TriggerRepoll(clusterID)
-	}
-
-	// Step 7: Requeue.
+	// Step 6: Requeue.
 	r.log.Infof(ctx, "placement: cluster %s placed, requeueing after %s", clusterID, requeueAfter)
 	return reconcile.Result{RequeueAfter: requeueAfter}, nil
 }

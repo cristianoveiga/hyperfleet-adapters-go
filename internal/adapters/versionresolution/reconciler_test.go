@@ -87,11 +87,6 @@ func (m *mockStoreClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVer
 }
 func (m *mockStoreClient) IsObjectNamespaced(_ runtime.Object) (bool, error) { return false, nil }
 
-// noopStore satisfies the store.TriggerRepoll dependency.
-type noopStore struct{}
-
-func (n *noopStore) TriggerRepoll(_ string) {}
-
 // newMockCincinnati builds a simple httptest server that returns a Cincinnati
 // graph containing the given release, or an empty graph if release is nil.
 func newMockCincinnati(release *ReleaseInfo) *httptest.Server {
@@ -140,7 +135,7 @@ func buildReconciler(
 	hfClient := hyperfleetapi.New(hfSrv.URL, "v1", newTestLogger(t))
 	cincClient := NewCincinnatiClient(cincSrv.URL, "amd64")
 	storeClient := &mockStoreClient{cluster: cluster}
-	return NewReconciler(hfClient, cincClient, newTestLogger(t), storeClient, &noopStore{})
+	return NewReconciler(hfClient, cincClient, newTestLogger(t), storeClient)
 }
 
 // ---- tests ------------------------------------------------------------------
