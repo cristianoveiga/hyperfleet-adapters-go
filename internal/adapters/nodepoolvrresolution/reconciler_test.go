@@ -2,12 +2,8 @@ package nodepoolvrresolution
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -17,9 +13,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/versionresolution"
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/hyperfleetapi"
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/hyperfleetstore"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
 
@@ -37,18 +33,17 @@ func newTestLogger(t *testing.T) logger.Logger {
 	return log
 }
 
-// mockStoreClient is a minimal client.Client backed by a fixed HyperFleetNodePool
-// and HyperFleetCluster. Get dispatches by object type.
+// mockStoreClient is a minimal client.Client backed by a fixed NodePool and Cluster.
 type mockStoreClient struct {
-	nodepool   *hyperfleetstore.HyperFleetNodePool
-	cluster    *hyperfleetstore.HyperFleetCluster
-	npGetErr   error
-	clsGetErr  error
+	nodepool  *privatev1alpha1.NodePool
+	cluster   *privatev1alpha1.Cluster
+	npGetErr  error
+	clsGetErr error
 }
 
 func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
 	switch o := obj.(type) {
-	case *hyperfleetstore.HyperFleetNodePool:
+	case *privatev1alpha1.NodePool:
 		if m.npGetErr != nil {
 			return m.npGetErr
 		}
@@ -57,7 +52,7 @@ func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.
 		}
 		*o = *m.nodepool
 		return nil
-	case *hyperfleetstore.HyperFleetCluster:
+	case *privatev1alpha1.Cluster:
 		if m.clsGetErr != nil {
 			return m.clsGetErr
 		}
@@ -101,22 +96,6 @@ func (m *mockStoreClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVer
 }
 func (m *mockStoreClient) IsObjectNamespaced(_ runtime.Object) (bool, error) { return false, nil }
 
-// newMockCincinnati builds a simple httptest server that returns a Cincinnati
-// graph containing the given release, or an empty graph if release is nil.
-func newMockCincinnati(release *versionresolution.ReleaseInfo) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		type graph struct {
-			Nodes []versionresolution.ReleaseInfo `json:"nodes"`
-		}
-		g := graph{}
-		if release != nil {
-			g.Nodes = []versionresolution.ReleaseInfo{*release}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(g) //nolint:errcheck
-	}))
-}
-
 // npReq returns a reconcile.Request for the given clusterID/nodepoolID pair.
 func npReq(clusterID, nodepoolID string) reconcile.Request {
 	return reconcile.Request{
@@ -127,200 +106,79 @@ func npReq(clusterID, nodepoolID string) reconcile.Request {
 // buildReconciler wires up a Reconciler backed by the store client.
 func buildReconciler(
 	t *testing.T,
-	np *hyperfleetstore.HyperFleetNodePool,
-	cluster *hyperfleetstore.HyperFleetCluster,
-	cincSrv *httptest.Server,
-	putCapture *[]hyperfleetapi.StatusPayload,
+	np *privatev1alpha1.NodePool,
+	cluster *privatev1alpha1.Cluster,
 ) *Reconciler {
 	t.Helper()
-
-	hfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut {
-			var payload hyperfleetapi.StatusPayload
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			*putCapture = append(*putCapture, payload)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(hfSrv.Close)
-
-	hfClient := hyperfleetapi.New(hfSrv.URL, "v1", newTestLogger(t))
-	cincClient := versionresolution.NewCincinnatiClient(cincSrv.URL, "amd64")
+	// Cincinnati client is created but the current reconciler returns early before
+	// using it (pending NodePoolSpec.Release field). Use a dummy URL.
+	cincClient := versionresolution.NewCincinnatiClient("http://localhost:0", "amd64")
 	storeClient := &mockStoreClient{nodepool: np, cluster: cluster}
-	return NewReconciler(hfClient, cincClient, newTestLogger(t), storeClient)
+	return NewReconciler(cincClient, newTestLogger(t), storeClient)
 }
 
 // ---- tests ------------------------------------------------------------------
 
-func TestReconciler_HappyPath(t *testing.T) {
-	release := &versionresolution.ReleaseInfo{
-		Version: "4.22.0-ec.4",
-		Payload: "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
-	}
-	cincSrv := newMockCincinnati(release)
-	defer cincSrv.Close()
-
-	np := &hyperfleetstore.HyperFleetNodePool{
-		ClusterID:    "cluster-1",
-		HFGeneration: 3,
-		Spec: hyperfleetapi.NodePoolSpec{
-			Release: hyperfleetapi.ReleaseSpec{Version: "4.22.0-ec.4"},
-		},
-		AdapterStatuses: hyperfleetapi.AdapterStatuses{}, // not yet resolved
-	}
-	np.SetName("np-1")
-	np.SetNamespace("cluster-1")
-
-	cluster := &hyperfleetstore.HyperFleetCluster{}
-	cluster.SetName("cluster-1")
-	cluster.SetNamespace(hyperfleetstore.ClusterNamespace)
-
-	var puts []hyperfleetapi.StatusPayload
-	r := buildReconciler(t, np, cluster, cincSrv, &puts)
-
-	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
-
-	require.NoError(t, err)
-	require.Equal(t, reconcile.Result{RequeueAfter: requeueLong}, result)
-	require.Len(t, puts, 1, "expected one PUT")
-
-	put := puts[0]
-	require.Equal(t, adapterName, put.Adapter)
-	require.Equal(t, int64(3), put.ObservedGeneration)
-	require.Equal(t, release.Payload, put.Data["release_image"])
-	require.Equal(t, "4.22.0-ec.4", put.Data["release_version"])
-	require.Equal(t, "candidate-4.22", put.Data["release_channel"])
-	require.Equal(t, "candidate", put.Data["release_channel_group"])
-	require.Len(t, put.Conditions, 3)
-
-	require.Equal(t, "Applied", put.Conditions[0].Type)
-	require.Equal(t, "True", put.Conditions[0].Status)
-	require.Equal(t, "VersionResolved", put.Conditions[0].Reason)
-
-	require.Equal(t, "Available", put.Conditions[1].Type)
-	require.Equal(t, "True", put.Conditions[1].Status)
-	require.Equal(t, "ReleaseImageAvailable", put.Conditions[1].Reason)
-
-	require.Equal(t, "Health", put.Conditions[2].Type)
-	require.Equal(t, "True", put.Conditions[2].Status)
-	require.Equal(t, "VersionResolved", put.Conditions[2].Reason)
-
-	_, parseErr := time.Parse(time.RFC3339, put.ObservedTime)
-	require.NoError(t, parseErr)
-}
-
-func TestReconciler_AlreadyResolved(t *testing.T) {
-	cincSrv := newMockCincinnati(nil)
-	defer cincSrv.Close()
-
-	np := &hyperfleetstore.HyperFleetNodePool{
-		ClusterID: "cluster-1",
-		Spec: hyperfleetapi.NodePoolSpec{
-			Release: hyperfleetapi.ReleaseSpec{Version: "4.22.0-ec.4"},
-		},
-		AdapterStatuses: hyperfleetapi.AdapterStatuses{
-			{
-				Adapter: adapterName,
-				Data: map[string]any{
-					"release_image":         "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
-					"release_version":       "4.22.0-ec.4",
-					"release_channel":       "candidate-4.22",
-					"release_channel_group": "candidate",
-				},
-			},
-		},
-	}
-	np.SetName("np-2")
-	np.SetNamespace("cluster-1")
-
-	cluster := &hyperfleetstore.HyperFleetCluster{}
-	cluster.SetName("cluster-1")
-	cluster.SetNamespace(hyperfleetstore.ClusterNamespace)
-
-	var puts []hyperfleetapi.StatusPayload
-	r := buildReconciler(t, np, cluster, cincSrv, &puts)
-
-	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-2"))
-
-	require.NoError(t, err)
-	require.Equal(t, reconcile.Result{}, result)
-	require.Empty(t, puts)
-}
-
 func TestReconciler_NodepoolNotFound(t *testing.T) {
-	cincSrv := newMockCincinnati(nil)
-	defer cincSrv.Close()
-
-	var puts []hyperfleetapi.StatusPayload
-	r := buildReconciler(t, nil, nil, cincSrv, &puts) // nil nodepool → NotFound
+	r := buildReconciler(t, nil, nil) // nil nodepool → NotFound
 
 	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-404"))
 
 	require.NoError(t, err)
 	require.Equal(t, reconcile.Result{}, result)
-	require.Empty(t, puts)
 }
 
-func TestReconciler_VersionNotInCincinnati(t *testing.T) {
-	// Cincinnati returns an empty graph (no matching node).
-	cincSrv := newMockCincinnati(nil)
-	defer cincSrv.Close()
-
-	np := &hyperfleetstore.HyperFleetNodePool{
-		ClusterID: "cluster-1",
-		Spec: hyperfleetapi.NodePoolSpec{
-			Release: hyperfleetapi.ReleaseSpec{Version: "4.22.0-ec.4"},
-		},
-		AdapterStatuses: hyperfleetapi.AdapterStatuses{},
-	}
-	np.SetName("np-5")
+func TestReconciler_ClusterNotFoundForNodepool(t *testing.T) {
+	np := &privatev1alpha1.NodePool{}
+	np.SetName("np-1")
 	np.SetNamespace("cluster-1")
 
-	cluster := &hyperfleetstore.HyperFleetCluster{}
-	cluster.SetName("cluster-1")
-	cluster.SetNamespace(hyperfleetstore.ClusterNamespace)
+	r := buildReconciler(t, np, nil) // nil cluster → NotFound
 
-	var puts []hyperfleetapi.StatusPayload
-	r := buildReconciler(t, np, cluster, cincSrv, &puts)
-
-	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-5"))
+	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
 
 	require.NoError(t, err)
 	require.Equal(t, reconcile.Result{}, result)
-	require.Empty(t, puts)
 }
 
-func TestReconciler_EmptyVersion(t *testing.T) {
-	cincSrv := newMockCincinnati(nil)
-	defer cincSrv.Close()
-
-	np := &hyperfleetstore.HyperFleetNodePool{
-		ClusterID: "cluster-1",
-		Spec: hyperfleetapi.NodePoolSpec{
-			Release: hyperfleetapi.ReleaseSpec{Version: ""}, // empty
-		},
-		AdapterStatuses: hyperfleetapi.AdapterStatuses{},
-	}
-	np.SetName("np-6")
+func TestReconciler_AlreadyResolved(t *testing.T) {
+	np := &privatev1alpha1.NodePool{}
+	np.SetName("np-2")
 	np.SetNamespace("cluster-1")
+	np.Status.VersionResolution = &privatev1alpha1.VersionResolutionResult{
+		ReleaseImage:   "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
+		ReleaseVersion: "4.22.0-ec.4",
+	}
 
-	cluster := &hyperfleetstore.HyperFleetCluster{}
+	cluster := &privatev1alpha1.Cluster{}
 	cluster.SetName("cluster-1")
-	cluster.SetNamespace(hyperfleetstore.ClusterNamespace)
+	cluster.SetNamespace("hyperfleet")
 
-	var puts []hyperfleetapi.StatusPayload
-	r := buildReconciler(t, np, cluster, cincSrv, &puts)
+	r := buildReconciler(t, np, cluster)
 
-	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-6"))
+	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-2"))
 
 	require.NoError(t, err)
 	require.Equal(t, reconcile.Result{}, result)
-	require.Empty(t, puts)
+}
+
+func TestReconciler_NoVersionResolution_ReturnsNoOp(t *testing.T) {
+	// NodePool has no VersionResolution and no Release field (pending types).
+	// Reconciler should return early with no-op.
+	np := &privatev1alpha1.NodePool{}
+	np.SetName("np-3")
+	np.SetNamespace("cluster-1")
+
+	cluster := &privatev1alpha1.Cluster{}
+	cluster.SetName("cluster-1")
+	cluster.SetNamespace("hyperfleet")
+
+	r := buildReconciler(t, np, cluster)
+
+	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-3"))
+
+	require.NoError(t, err)
+	require.Equal(t, reconcile.Result{}, result)
 }
 
 func TestBuildChannel(t *testing.T) {

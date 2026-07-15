@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+
+	"github.com/go-logr/logr"
 )
 
 const (
@@ -286,6 +288,15 @@ func (l *logger) WithFields(fields map[string]interface{}) Logger {
 		version:   l.version,
 		hostname:  l.hostname,
 	}
+}
+
+// ToLogr returns a logr.Logger backed by the given Logger's slog handler.
+// Use this to wire the app logger into controller-runtime via ctrl.SetLogger.
+func ToLogr(l Logger) logr.Logger {
+	if sl, ok := l.(*logger); ok {
+		return logr.FromSlogHandler(sl.slog.Handler())
+	}
+	return logr.Discard()
 }
 
 // Without returns a new logger with the specified field removed.

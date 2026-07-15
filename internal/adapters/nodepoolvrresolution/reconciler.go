@@ -7,13 +7,14 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/versionresolution"
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/hyperfleetapi"
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/hyperfleetstore"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
 
@@ -25,29 +26,27 @@ const (
 
 // Reconciler resolves the OCP release image for a node pool via Cincinnati.
 type Reconciler struct {
-	hfClient   hyperfleetapi.Client
 	cincinnati *versionresolution.CincinnatiClient
 	log        logger.Logger
 	client     client.Client
 }
 
 // NewReconciler creates a new nodepool-vr Reconciler.
-func NewReconciler(hfClient hyperfleetapi.Client, cincinnati *versionresolution.CincinnatiClient, log logger.Logger, c client.Client) *Reconciler {
+func NewReconciler(cincinnati *versionresolution.CincinnatiClient, log logger.Logger, c client.Client) *Reconciler {
 	return &Reconciler{
-		hfClient:   hfClient,
 		cincinnati: cincinnati,
 		log:        log,
 		client:     c,
 	}
 }
 
-// Reconcile runs the nodepool-vr loop for one nodepool event from the store-backed cache.
+// Reconcile runs the nodepool-vr loop for one nodepool event.
 // req.Namespace = clusterID, req.Name = nodepoolID.
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	clusterID := req.Namespace
 	nodepoolID := req.Name
 
-	var np hyperfleetstore.HyperFleetNodePool
+	var np privatev1alpha1.NodePool
 	if err := r.client.Get(ctx, req.NamespacedName, &np); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.log.Infof(ctx, "nodepool-vr: nodepool %s not found, skipping", nodepoolID)
@@ -56,9 +55,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("nodepool-vr: get nodepool %s: %w", nodepoolID, err)
 	}
 
-	// Verify the parent cluster still exists before resolving the version.
-	clusterKey := types.NamespacedName{Namespace: hyperfleetstore.ClusterNamespace, Name: clusterID}
-	var cluster hyperfleetstore.HyperFleetCluster
+	// Verify the parent cluster still exists.
+	clusterKey := types.NamespacedName{Namespace: "hyperfleet", Name: clusterID}
+	var cluster privatev1alpha1.Cluster
 	if err := r.client.Get(ctx, clusterKey, &cluster); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.log.Infof(ctx, "nodepool-vr: cluster %s not found for nodepool %s, skipping", clusterID, nodepoolID)
@@ -67,20 +66,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("nodepool-vr: get cluster %s: %w", clusterID, err)
 	}
 
-	version := np.Spec.Release.Version
-	if version == "" {
+	if np.Spec.Release == nil || np.Spec.Release.Version == "" {
 		r.log.Infof(ctx, "nodepool-vr: nodepool %s: release version not set, waiting for next event", nodepoolID)
 		return reconcile.Result{}, nil
 	}
+	version := np.Spec.Release.Version
 
-	// Check already resolved via AdapterStatuses pre-populated by the polling loop.
-	vr := np.AdapterStatuses.NodePoolVR()
-	if vr.Ready() && vr.ReleaseVersion == version {
+	// Check already resolved.
+	if np.Status.VersionResolution != nil && np.Status.VersionResolution.ReleaseVersion == version {
 		r.log.Infof(ctx, "nodepool-vr: nodepool %s: version %s already resolved, waiting for next event", nodepoolID, version)
 		return reconcile.Result{}, nil
 	}
 
-	channel, err := buildChannel(version, defaultChannelGroup)
+	channelGroup := defaultChannelGroup
+	if np.Spec.Release.ChannelGroup != "" {
+		channelGroup = np.Spec.Release.ChannelGroup
+	}
+	channel, err := buildChannel(version, channelGroup)
 	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("nodepool-vr: build channel for nodepool %s: %w", nodepoolID, err)
 	}
@@ -95,40 +97,33 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, nil
 	}
 
-	payload := hyperfleetapi.StatusPayload{
-		Adapter:            adapterName,
-		ObservedGeneration: np.HFGeneration,
-		ObservedTime:       time.Now().UTC().Format(time.RFC3339),
-		Conditions: []hyperfleetapi.Condition{
-			{
-				Type:    "Applied",
-				Status:  "True",
-				Reason:  "VersionResolved",
-				Message: fmt.Sprintf("Version %s resolved", version),
-			},
-			{
-				Type:    "Available",
-				Status:  "True",
-				Reason:  "ReleaseImageAvailable",
-				Message: fmt.Sprintf("Release image available: %s", info.Payload),
-			},
-			{
-				Type:    "Health",
-				Status:  "True",
-				Reason:  "VersionResolved",
-				Message: fmt.Sprintf("Version %s resolved", version),
-			},
-		},
-		Data: map[string]any{
-			"release_image":         info.Payload,
-			"release_version":       version,
-			"release_channel":       channel,
-			"release_channel_group": defaultChannelGroup,
-		},
+	// Write VR result and conditions to status.
+	np.Status.VersionResolution = &privatev1alpha1.VersionResolutionResult{
+		ReleaseImage:   info.Payload,
+		ReleaseVersion: info.Version,
+		ReleaseChannel: channel,
 	}
-
-	if err := r.hfClient.PutNodePoolStatus(ctx, clusterID, nodepoolID, payload); err != nil {
-		return reconcile.Result{}, fmt.Errorf("nodepool-vr: put nodepool status %s: %w", nodepoolID, err)
+	setCondition(&np.Status.Conditions, metav1.Condition{
+		Type:               "Applied",
+		Status:             metav1.ConditionTrue,
+		Reason:             "VersionResolved",
+		Message:            fmt.Sprintf("Version %s resolved", version),
+		ObservedGeneration: np.Generation,
+		LastTransitionTime: metav1.Now(),
+	})
+	setCondition(&np.Status.Conditions, metav1.Condition{
+		Type:               "Available",
+		Status:             metav1.ConditionTrue,
+		Reason:             "VersionResolved",
+		Message:            fmt.Sprintf("Version %s resolved", version),
+		ObservedGeneration: np.Generation,
+		LastTransitionTime: metav1.Now(),
+	})
+	if err := r.client.Status().Update(ctx, &np); err != nil {
+		if apierrors.IsConflict(err) {
+			return reconcile.Result{}, nil
+		}
+		return reconcile.Result{}, fmt.Errorf("nodepool-vr: update nodepool status %s: %w", nodepoolID, err)
 	}
 
 	r.log.Infof(ctx, "nodepool-vr: nodepool %s: resolved version %s", nodepoolID, version)
@@ -136,13 +131,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 }
 
 // buildChannel constructs the Cincinnati channel name from a version string and channel group.
-// e.g. "4.22.0-ec.4" + "candidate" → "candidate-4.22"
+// e.g. "4.22.0-rc.5" + "candidate" → "candidate-4.22"
 func buildChannel(version, channelGroup string) (string, error) {
 	parts := strings.Split(version, ".")
 	if len(parts) < 2 {
-		return "", fmt.Errorf("invalid version string %q: expected at least major.minor", version)
+		return "", fmt.Errorf("invalid version %q: expected at least major.minor", version)
 	}
-	major := parts[0]
-	minor := parts[1]
-	return fmt.Sprintf("%s-%s.%s", channelGroup, major, minor), nil
+	return fmt.Sprintf("%s-%s.%s", channelGroup, parts[0], parts[1]), nil
+}
+
+// setCondition upserts a condition into the slice, preserving timestamps when status is unchanged.
+func setCondition(conditions *[]metav1.Condition, c metav1.Condition) {
+	if c.LastTransitionTime.IsZero() {
+		c.LastTransitionTime = metav1.Now()
+	}
+	for i, existing := range *conditions {
+		if existing.Type == c.Type {
+			if existing.Status != c.Status {
+				c.LastTransitionTime = metav1.Now()
+			} else {
+				c.LastTransitionTime = existing.LastTransitionTime
+			}
+			(*conditions)[i] = c
+			return
+		}
+	}
+	*conditions = append(*conditions, c)
 }

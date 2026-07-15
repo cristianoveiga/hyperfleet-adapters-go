@@ -14,13 +14,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 
+	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+
 	hcadapter "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/hc"
 	nodepooladapter "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/nodepool"
 	nodepoolvrresolution "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/nodepoolvrresolution"
 	placementadapter "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/placement"
 	versionresolution "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/versionresolution"
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/hyperfleetapi"
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/hyperfleetstore"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/maestroclient"
 	maestrotransport "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport/maestro"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
@@ -28,12 +28,10 @@ import (
 
 // rootFlags holds values bound to the root persistent flags.
 type rootFlags struct {
-	logLevel   string
-	logFormat  string
-	apiURL     string
-	apiVersion string
-	orlopURL   string
-	workers    int
+	logLevel  string
+	logFormat string
+	orlopURL  string
+	workers   int
 }
 
 // maestroFlags holds Maestro-related flags shared by hc and nodepool subcommands.
@@ -67,12 +65,6 @@ func main() {
 			if v := envOr("LOG_FORMAT", ""); v != "" && !cmd.Flags().Changed("log-format") {
 				rf.logFormat = v
 			}
-			if v := envOr("HYPERFLEET_API_URL", ""); v != "" && !cmd.Flags().Changed("api-url") {
-				rf.apiURL = v
-			}
-			if v := envOr("API_VERSION", ""); v != "" && !cmd.Flags().Changed("api-version") {
-				rf.apiVersion = v
-			}
 			if v := envOr("ORLOP_URL", ""); v != "" && !cmd.Flags().Changed("orlop-url") {
 				rf.orlopURL = v
 			}
@@ -81,8 +73,6 @@ func main() {
 
 	root.PersistentFlags().StringVar(&rf.logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	root.PersistentFlags().StringVar(&rf.logFormat, "log-format", "json", "Log format (json, text)")
-	root.PersistentFlags().StringVar(&rf.apiURL, "api-url", "http://hyperfleet-api:8000", "HyperFleet API base URL for status writes [$HYPERFLEET_API_URL]")
-	root.PersistentFlags().StringVar(&rf.apiVersion, "api-version", "v1", "HyperFleet API version")
 	root.PersistentFlags().StringVar(&rf.orlopURL, "orlop-url", "http://hyperfleet-api:8080", "Orlop API server URL for resource reads/watches [$ORLOP_URL]")
 	root.PersistentFlags().IntVar(&rf.workers, "workers", 10, "Concurrent reconcile goroutines")
 
@@ -116,14 +106,15 @@ func newLogger(rf *rootFlags, component string) (logger.Logger, error) {
 // newScheme creates a runtime.Scheme with HyperFleet types registered.
 func newScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
-	if err := hyperfleetstore.AddToScheme(scheme); err != nil {
+	if err := privatev1alpha1.AddToScheme(scheme); err != nil {
 		panic(fmt.Sprintf("failed to register HyperFleet types: %v", err))
 	}
 	return scheme
 }
 
 // newManager creates a controller-runtime Manager pointed at the orlop API server.
-func newManager(rf *rootFlags, scheme *runtime.Scheme) (ctrl.Manager, error) {
+func newManager(rf *rootFlags, scheme *runtime.Scheme, log logger.Logger) (ctrl.Manager, error) {
+	ctrl.SetLogger(logger.ToLogr(log))
 	return ctrl.NewManager(&rest.Config{Host: rf.orlopURL}, ctrl.Options{
 		Scheme:         scheme,
 		LeaderElection: false,
@@ -152,17 +143,16 @@ func newVersionResolutionCmd(rf *rootFlags) *cobra.Command {
 			}
 
 			scheme := newScheme()
-			mgr, err := newManager(rf, scheme)
+			mgr, err := newManager(rf, scheme, log)
 			if err != nil {
 				return fmt.Errorf("create manager: %w", err)
 			}
 
-			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
 			cinClient := versionresolution.NewCincinnatiClient(cincinnatiURL, arch)
-			rec := versionresolution.NewReconciler(hfClient, cinClient, log, mgr.GetClient())
+			rec := versionresolution.NewReconciler(cinClient, log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
-				For(&hyperfleetstore.HyperFleetCluster{}).
+				For(&privatev1alpha1.Cluster{}).
 				WithOptions(controllerOpts(rf)).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
@@ -195,17 +185,16 @@ func newNodepoolVRCmd(rf *rootFlags) *cobra.Command {
 			}
 
 			scheme := newScheme()
-			mgr, err := newManager(rf, scheme)
+			mgr, err := newManager(rf, scheme, log)
 			if err != nil {
 				return fmt.Errorf("create manager: %w", err)
 			}
 
-			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
 			cinClient := versionresolution.NewCincinnatiClient(cincinnatiURL, arch)
-			rec := nodepoolvrresolution.NewReconciler(hfClient, cinClient, log, mgr.GetClient())
+			rec := nodepoolvrresolution.NewReconciler(cinClient, log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
-				For(&hyperfleetstore.HyperFleetNodePool{}).
+				For(&privatev1alpha1.NodePool{}).
 				WithOptions(controllerOpts(rf)).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
@@ -245,8 +234,6 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 				return fmt.Errorf("create logger: %w", err)
 			}
 
-			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
-
 			var selector placementadapter.Selector
 			var candidates []placementadapter.Candidate
 
@@ -270,15 +257,15 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 			}
 
 			scheme := newScheme()
-			mgr, err := newManager(rf, scheme)
+			mgr, err := newManager(rf, scheme, log)
 			if err != nil {
 				return fmt.Errorf("create manager: %w", err)
 			}
 
-			rec := placementadapter.NewReconciler(hfClient, selector, candidates, log, mgr.GetClient())
+			rec := placementadapter.NewReconciler(selector, candidates, log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
-				For(&hyperfleetstore.HyperFleetCluster{}).
+				For(&privatev1alpha1.Cluster{}).
 				WithOptions(controllerOpts(rf)).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
@@ -326,16 +313,15 @@ func newHCCmd(rf *rootFlags) *cobra.Command {
 			transport := maestrotransport.New(mwc, mf.sourceID, log)
 
 			scheme := newScheme()
-			mgr, err := newManager(rf, scheme)
+			mgr, err := newManager(rf, scheme, log)
 			if err != nil {
 				return fmt.Errorf("create manager: %w", err)
 			}
 
-			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
-			rec := hcadapter.New(hfClient, transport, log, mgr.GetClient())
+			rec := hcadapter.New(transport, log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
-				For(&hyperfleetstore.HyperFleetCluster{}).
+				For(&privatev1alpha1.Cluster{}).
 				WithOptions(controllerOpts(rf)).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
@@ -384,16 +370,15 @@ func newNodepoolCmd(rf *rootFlags) *cobra.Command {
 			transport := maestrotransport.New(mwc, mf.sourceID, log)
 
 			scheme := newScheme()
-			mgr, err := newManager(rf, scheme)
+			mgr, err := newManager(rf, scheme, log)
 			if err != nil {
 				return fmt.Errorf("create manager: %w", err)
 			}
 
-			hfClient := hyperfleetapi.New(rf.apiURL, rf.apiVersion, log)
-			rec := nodepooladapter.New(hfClient, transport, log, mgr.GetClient())
+			rec := nodepooladapter.New(transport, log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
-				For(&hyperfleetstore.HyperFleetNodePool{}).
+				For(&privatev1alpha1.NodePool{}).
 				WithOptions(controllerOpts(rf)).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)

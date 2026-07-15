@@ -2,10 +2,7 @@ package nodepool
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -18,8 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/common/hyperfleetapi"
-	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/hyperfleetstore"
+	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport/mock"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
@@ -42,18 +39,37 @@ func newTestLogger(t *testing.T) logger.Logger {
 	return log
 }
 
-// mockStoreClient is a minimal client.Client backed by a fixed HyperFleetNodePool
-// and HyperFleetCluster. Get dispatches by object type.
+// mockStatusWriter captures Status().Update calls.
+type mockStatusWriter struct {
+	called bool
+}
+
+func (m *mockStatusWriter) Update(_ context.Context, _ client.Object, _ ...client.SubResourceUpdateOption) error {
+	m.called = true
+	return nil
+}
+func (m *mockStatusWriter) Create(_ context.Context, _ client.Object, _ client.Object, _ ...client.SubResourceCreateOption) error {
+	return nil
+}
+func (m *mockStatusWriter) Patch(_ context.Context, _ client.Object, _ client.Patch, _ ...client.SubResourcePatchOption) error {
+	return nil
+}
+func (m *mockStatusWriter) Apply(_ context.Context, _ runtime.ApplyConfiguration, _ ...client.SubResourceApplyOption) error {
+	return nil
+}
+
+// mockStoreClient is a minimal client.Client backed by a fixed NodePool and Cluster.
 type mockStoreClient struct {
-	nodepool  *hyperfleetstore.HyperFleetNodePool
-	cluster   *hyperfleetstore.HyperFleetCluster
-	npGetErr  error
-	clsGetErr error
+	nodepool     *privatev1alpha1.NodePool
+	cluster      *privatev1alpha1.Cluster
+	npGetErr     error
+	clsGetErr    error
+	statusWriter *mockStatusWriter
 }
 
 func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
 	switch o := obj.(type) {
-	case *hyperfleetstore.HyperFleetNodePool:
+	case *privatev1alpha1.NodePool:
 		if m.npGetErr != nil {
 			return m.npGetErr
 		}
@@ -62,7 +78,7 @@ func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.
 		}
 		*o = *m.nodepool
 		return nil
-	case *hyperfleetstore.HyperFleetCluster:
+	case *privatev1alpha1.Cluster:
 		if m.clsGetErr != nil {
 			return m.clsGetErr
 		}
@@ -74,6 +90,13 @@ func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.
 	default:
 		return fmt.Errorf("unexpected type %T", obj)
 	}
+}
+
+func (m *mockStoreClient) Status() client.SubResourceWriter {
+	if m.statusWriter == nil {
+		m.statusWriter = &mockStatusWriter{}
+	}
+	return m.statusWriter
 }
 
 func (m *mockStoreClient) List(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
@@ -98,7 +121,6 @@ func (m *mockStoreClient) Apply(_ context.Context, _ runtime.ApplyConfiguration,
 	return nil
 }
 func (m *mockStoreClient) SubResource(_ string) client.SubResourceClient { return nil }
-func (m *mockStoreClient) Status() client.SubResourceWriter              { return nil }
 func (m *mockStoreClient) Scheme() *runtime.Scheme                       { return nil }
 func (m *mockStoreClient) RESTMapper() meta.RESTMapper                   { return nil }
 func (m *mockStoreClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVersionKind, error) {
@@ -113,110 +135,70 @@ func npReq(clusterID, nodepoolID string) reconcile.Request {
 	}
 }
 
-// writeJSON writes v as JSON with the given status code.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if v != nil {
-		_ = json.NewEncoder(w).Encode(v) //nolint:errcheck
-	}
-}
-
-// buildReadyStatuses creates cluster and nodepool statuses that pass all gates.
-func buildReadyStatuses(specVersion string) (hyperfleetapi.AdapterStatuses, hyperfleetapi.AdapterStatuses) {
-	clusterStatuses := hyperfleetapi.AdapterStatuses{
-		{
-			Adapter: "placement-adapter",
-			Data: map[string]any{
-				"managementClusterName": "mc-us-c1",
-				"baseDomain":            "hc.example.com",
-			},
-		},
-		{
-			Adapter: "hc-adapter",
-			Conditions: []hyperfleetapi.Condition{
-				{Type: "Available", Status: "True"},
-			},
-		},
-	}
-	nodepoolStatuses := hyperfleetapi.AdapterStatuses{
-		{
-			Adapter: "nodepool-vr-adapter",
-			Data: map[string]any{
-				"release_image":   "quay.io/openshift-release-dev/ocp-release:4.16.0-x86_64",
-				"release_version": specVersion,
-			},
-		},
-	}
-	return clusterStatuses, nodepoolStatuses
-}
-
-func testNodePool(specVersion string, clusterStatuses, nodepoolStatuses hyperfleetapi.AdapterStatuses) *hyperfleetstore.HyperFleetNodePool {
-	np := &hyperfleetstore.HyperFleetNodePool{
-		ClusterID:    "cluster-test",
-		DisplayName:  "my-nodepool",
-		HFGeneration: 5,
-		Spec: hyperfleetapi.NodePoolSpec{
-			Release: hyperfleetapi.ReleaseSpec{Version: specVersion},
-			Platform: hyperfleetapi.NodePoolGCPPlatform{
-				Type: "GCP",
-				GCP: hyperfleetapi.NodePoolGCPConf{
-					ProjectID: "my-project",
-					Region:    "us-central1",
-					Zone:      "us-central1-b",
-				},
-			},
-		},
-		AdapterStatuses: nodepoolStatuses,
-	}
+// testNodePool creates a NodePool with VR ready.
+func testNodePool(vrVersion string) *privatev1alpha1.NodePool {
+	np := &privatev1alpha1.NodePool{}
 	np.SetName("np-test")
 	np.SetNamespace("cluster-test")
+	np.Spec = privatev1alpha1.NodePoolSpec{
+		ClusterID: "cluster-test",
+		Platform: privatev1alpha1.NodePoolPlatformSpec{
+			Type: "GCP",
+			GCP: &privatev1alpha1.GCPNodePoolPlatform{
+				MachineType: "n2-standard-4",
+				DiskSize:    100,
+				DiskType:    "pd-ssd",
+				Zones:       []string{"us-central1-b"},
+			},
+		},
+	}
+	if vrVersion != "" {
+		np.Status.VersionResolution = &privatev1alpha1.VersionResolutionResult{
+			ReleaseImage:   "quay.io/openshift-release-dev/ocp-release:4.16.0-x86_64",
+			ReleaseVersion: vrVersion,
+		}
+	}
 	return np
 }
 
-func testCluster(clusterStatuses hyperfleetapi.AdapterStatuses) *hyperfleetstore.HyperFleetCluster {
-	c := &hyperfleetstore.HyperFleetCluster{
-		DisplayName: "my-cluster",
-		Spec: hyperfleetapi.ClusterSpec{
-			Platform: hyperfleetapi.GCPPlatform{
-				Type: "GCP",
-				GCP: hyperfleetapi.GCPConfig{
-					Subnet: "my-subnet",
-					Region: "us-central1",
-				},
+// testCluster creates a Cluster with placement ready and HC Available condition set.
+func testCluster(placementReady, hcAvailable bool) *privatev1alpha1.Cluster {
+	c := &privatev1alpha1.Cluster{}
+	c.SetName("cluster-test")
+	c.SetNamespace("hyperfleet")
+	c.Spec = privatev1alpha1.ClusterSpec{
+		Platform: privatev1alpha1.ClusterPlatformSpec{
+			Type: "GCP",
+			GCP: &privatev1alpha1.GCPClusterPlatform{
+				Subnet: "my-subnet",
+				Region: "us-central1",
 			},
 		},
-		AdapterStatuses: clusterStatuses,
 	}
-	c.SetName("cluster-test")
-	c.SetNamespace(hyperfleetstore.ClusterNamespace)
+	if placementReady {
+		c.Status.PlacementResult = &privatev1alpha1.PlacementResult{
+			ManagementClusterName: "mc-us-c1",
+			BaseDomain:            "hc.example.com",
+		}
+	}
+	if hcAvailable {
+		c.Status.Conditions = []metav1.Condition{
+			{Type: "Available", Status: metav1.ConditionTrue},
+		}
+	}
 	return c
 }
 
-// buildReconciler wires up a nodepool Reconciler with a store-backed client
-// and a PUT-only HTTP server for the HyperFleet API.
+// buildReconciler wires up a nodepool Reconciler.
 func buildReconciler(
 	t *testing.T,
-	np *hyperfleetstore.HyperFleetNodePool,
-	cluster *hyperfleetstore.HyperFleetCluster,
+	np *privatev1alpha1.NodePool,
+	cluster *privatev1alpha1.Cluster,
 	tr *mock.Client,
-	putCapture *bool,
-) *Reconciler {
+) (*Reconciler, *mockStoreClient) {
 	t.Helper()
-
-	hfSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut {
-			*putCapture = true
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		writeJSON(w, http.StatusNotFound, nil)
-	}))
-	t.Cleanup(hfSrv.Close)
-
-	apiClient := hyperfleetapi.New(hfSrv.URL, "v1", newTestLogger(t))
 	storeClient := &mockStoreClient{nodepool: np, cluster: cluster}
-	return New(apiClient, tr, newTestLogger(t), storeClient)
+	return New(tr, newTestLogger(t), storeClient), storeClient
 }
 
 // ---------------------------------------------------------------------------
@@ -224,9 +206,8 @@ func buildReconciler(
 // ---------------------------------------------------------------------------
 
 func TestReconcile_HappyPath(t *testing.T) {
-	clusterStatuses, nodepoolStatuses := buildReadyStatuses("4.16.0")
-	np := testNodePool("4.16.0", clusterStatuses, nodepoolStatuses)
-	cluster := testCluster(clusterStatuses)
+	np := testNodePool("4.16.0")
+	cluster := testCluster(true, true)
 
 	tr := mock.New()
 	mwName := np.Name + "-" + adapterName
@@ -244,8 +225,7 @@ func TestReconcile_HappyPath(t *testing.T) {
 		},
 	}
 
-	var putCalled bool
-	r := buildReconciler(t, np, cluster, tr, &putCalled)
+	r, storeClient := buildReconciler(t, np, cluster, tr)
 
 	result, err := r.Reconcile(context.Background(), npReq("cluster-test", "np-test"))
 	require.NoError(t, err)
@@ -254,26 +234,16 @@ func TestReconcile_HappyPath(t *testing.T) {
 	require.Len(t, tr.ApplyCalls, 1)
 	require.Equal(t, "mc-us-c1", tr.ApplyCalls[0].TargetCluster)
 	require.Equal(t, mwName, tr.ApplyCalls[0].Work.Name)
-	require.True(t, putCalled)
+	require.NotNil(t, storeClient.statusWriter)
+	require.True(t, storeClient.statusWriter.called, "expected Status().Update to be called")
 }
 
 func TestReconcile_NoPlacement(t *testing.T) {
-	// cluster statuses: no placement adapter
-	clusterStatuses := hyperfleetapi.AdapterStatuses{
-		{
-			Adapter: "hc-adapter",
-			Conditions: []hyperfleetapi.Condition{
-				{Type: "Available", Status: "True"},
-			},
-		},
-	}
-	_, nodepoolStatuses := buildReadyStatuses("4.16.0")
-	np := testNodePool("4.16.0", clusterStatuses, nodepoolStatuses)
-	cluster := testCluster(clusterStatuses)
+	np := testNodePool("4.16.0")
+	cluster := testCluster(false, true) // placement not ready
 
 	tr := mock.New()
-	var putCalled bool
-	r := buildReconciler(t, np, cluster, tr, &putCalled)
+	r, _ := buildReconciler(t, np, cluster, tr)
 
 	result, err := r.Reconcile(context.Background(), npReq("cluster-test", "np-test"))
 	require.NoError(t, err)
@@ -282,26 +252,11 @@ func TestReconcile_NoPlacement(t *testing.T) {
 }
 
 func TestReconcile_HCNotAvailable(t *testing.T) {
-	clusterStatuses := hyperfleetapi.AdapterStatuses{
-		{
-			Adapter: "placement-adapter",
-			Data: map[string]any{
-				"managementClusterName": "mc-us-c1",
-				"baseDomain":            "hc.example.com",
-			},
-		},
-		{
-			Adapter:    "hc-adapter",
-			Conditions: []hyperfleetapi.Condition{}, // not Available
-		},
-	}
-	_, nodepoolStatuses := buildReadyStatuses("4.16.0")
-	np := testNodePool("4.16.0", clusterStatuses, nodepoolStatuses)
-	cluster := testCluster(clusterStatuses)
+	np := testNodePool("4.16.0")
+	cluster := testCluster(true, false) // HC not available
 
 	tr := mock.New()
-	var putCalled bool
-	r := buildReconciler(t, np, cluster, tr, &putCalled)
+	r, _ := buildReconciler(t, np, cluster, tr)
 
 	result, err := r.Reconcile(context.Background(), npReq("cluster-test", "np-test"))
 	require.NoError(t, err)
@@ -310,14 +265,11 @@ func TestReconcile_HCNotAvailable(t *testing.T) {
 }
 
 func TestReconcile_NodePoolVRNotReady(t *testing.T) {
-	clusterStatuses, _ := buildReadyStatuses("4.16.0")
-	nodepoolStatuses := hyperfleetapi.AdapterStatuses{} // no nodepool-vr-adapter
-	np := testNodePool("4.16.0", clusterStatuses, nodepoolStatuses)
-	cluster := testCluster(clusterStatuses)
+	np := testNodePool("") // no VR
+	cluster := testCluster(true, true)
 
 	tr := mock.New()
-	var putCalled bool
-	r := buildReconciler(t, np, cluster, tr, &putCalled)
+	r, _ := buildReconciler(t, np, cluster, tr)
 
 	result, err := r.Reconcile(context.Background(), npReq("cluster-test", "np-test"))
 	require.NoError(t, err)
@@ -327,35 +279,9 @@ func TestReconcile_NodePoolVRNotReady(t *testing.T) {
 
 func TestReconcile_NodePoolNotFound(t *testing.T) {
 	tr := mock.New()
-	var putCalled bool
-	r := buildReconciler(t, nil, nil, tr, &putCalled) // nil nodepool → NotFound
+	r, _ := buildReconciler(t, nil, nil, tr) // nil nodepool → NotFound
 
 	result, err := r.Reconcile(context.Background(), npReq("cluster-test", "np-missing"))
-	require.NoError(t, err)
-	require.Equal(t, time.Duration(0), result.RequeueAfter)
-	require.Empty(t, tr.ApplyCalls)
-}
-
-func TestReconcile_VRVersionMismatch(t *testing.T) {
-	// Spec says 4.16.0 but VR reports 4.15.0 → should skip
-	clusterStatuses, _ := buildReadyStatuses("4.16.0")
-	nodepoolStatuses := hyperfleetapi.AdapterStatuses{
-		{
-			Adapter: "nodepool-vr-adapter",
-			Data: map[string]any{
-				"release_image":   "quay.io/openshift-release-dev/ocp-release:4.15.0-x86_64",
-				"release_version": "4.15.0", // mismatch
-			},
-		},
-	}
-	np := testNodePool("4.16.0", clusterStatuses, nodepoolStatuses)
-	cluster := testCluster(clusterStatuses)
-
-	tr := mock.New()
-	var putCalled bool
-	r := buildReconciler(t, np, cluster, tr, &putCalled)
-
-	result, err := r.Reconcile(context.Background(), npReq("cluster-test", "np-test"))
 	require.NoError(t, err)
 	require.Equal(t, time.Duration(0), result.RequeueAfter)
 	require.Empty(t, tr.ApplyCalls)
