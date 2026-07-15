@@ -39,7 +39,7 @@ func NewReconciler(selector Selector, candidates []Candidate, log logger.Logger,
 }
 
 // Reconcile runs the placement reconciliation loop for the cluster identified
-// by req.Name (= clusterID) in namespace req.Namespace (= "hyperfleet").
+// by req.Name (= clusterID) in namespace req.Namespace (= project namespace).
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	clusterID := req.Name
 

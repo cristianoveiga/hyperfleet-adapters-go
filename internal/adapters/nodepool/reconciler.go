@@ -41,11 +41,10 @@ func New(transport transport.Client, log logger.Logger, c client.Client) *Reconc
 }
 
 // Reconcile runs the nodepool adapter loop for one nodepool event.
-// req.Namespace = clusterID, req.Name = nodepoolID.
+// req.Namespace = project namespace, req.Name = nodepoolID.
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	clusterID := req.Namespace
 	nodepoolID := req.Name
-	log := r.log.With("clusterID", clusterID).With("nodepoolID", nodepoolID)
+	log := r.log.With("nodepoolID", nodepoolID)
 
 	// Read nodepool from cache.
 	var np privatev1.NodePool
@@ -57,9 +56,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("nodepool reconciler: get nodepool: %w", err)
 	}
 
-	// Read parent cluster from cache (namespace="hyperfleet", name=clusterID).
+	// Read parent cluster from cache using the cluster ID from spec.
+	clusterID := np.Spec.ClusterID
+	log = log.With("clusterID", clusterID)
 	var cluster privatev1.Cluster
-	clusterKey := types.NamespacedName{Namespace: "hyperfleet", Name: clusterID}
+	clusterKey := types.NamespacedName{Namespace: req.Namespace, Name: clusterID}
 	if err := r.client.Get(ctx, clusterKey, &cluster); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Infof(ctx, "cluster %s not found for nodepool %s, skipping", clusterID, nodepoolID)

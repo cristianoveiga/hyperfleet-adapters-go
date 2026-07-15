@@ -41,9 +41,8 @@ func NewReconciler(cincinnati *versionresolution.CincinnatiClient, log logger.Lo
 }
 
 // Reconcile runs the nodepool-vr loop for one nodepool event.
-// req.Namespace = clusterID, req.Name = nodepoolID.
+// req.Namespace = project namespace, req.Name = nodepoolID.
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	clusterID := req.Namespace
 	nodepoolID := req.Name
 
 	var np privatev1.NodePool
@@ -56,7 +55,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Verify the parent cluster still exists.
-	clusterKey := types.NamespacedName{Namespace: "hyperfleet", Name: clusterID}
+	clusterID := np.Spec.ClusterID
+	clusterKey := types.NamespacedName{Namespace: req.Namespace, Name: clusterID}
 	var cluster privatev1.Cluster
 	if err := r.client.Get(ctx, clusterKey, &cluster); err != nil {
 		if apierrors.IsNotFound(err) {
