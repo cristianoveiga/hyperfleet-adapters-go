@@ -184,14 +184,14 @@ func (r *Reconciler) applyStatusConditions(np *privatev1.NodePool, mwStatus *tra
 
 	if mwStatus == nil {
 		setCondition(&np.Status.Conditions, metav1.Condition{
-			Type:               "Applied",
+			Type:               "NodePoolManifestWorkApplied",
 			Status:             metav1.ConditionFalse,
 			Reason:             "ManifestWorkNotFound",
 			ObservedGeneration: gen,
 			LastTransitionTime: metav1.Now(),
 		})
 		setCondition(&np.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               "NodePoolAvailable",
 			Status:             metav1.ConditionFalse,
 			Reason:             "ManifestWorkNotFound",
 			ObservedGeneration: gen,
@@ -231,20 +231,20 @@ func (r *Reconciler) applyStatusConditions(np *privatev1.NodePool, mwStatus *tra
 	}
 
 	setCondition(&np.Status.Conditions, metav1.Condition{
-		Type:               "Applied",
+		Type:               "NodePoolManifestWorkApplied",
 		Status:             appliedStatus,
 		Reason:             appliedReason,
 		ObservedGeneration: gen,
 		LastTransitionTime: metav1.Now(),
 	})
 	setCondition(&np.Status.Conditions, metav1.Condition{
-		Type:               "Available",
+		Type:               "NodePoolAvailable",
 		Status:             metav1.ConditionStatus(availableStatus),
 		ObservedGeneration: gen,
 		LastTransitionTime: metav1.Now(),
 	})
 	setCondition(&np.Status.Conditions, metav1.Condition{
-		Type:               "Health",
+		Type:               "NodePoolHealthy",
 		Status:             healthStatus,
 		ObservedGeneration: gen,
 		LastTransitionTime: metav1.Now(),

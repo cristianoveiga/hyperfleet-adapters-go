@@ -74,17 +74,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		BaseDomain:            domain,
 	}
 	setCondition(&cluster.Status.Conditions, metav1.Condition{
-		Type:               "Applied",
+		Type:               "ManagementClusterSelected",
 		Status:             metav1.ConditionTrue,
 		Reason:             "PlacementDecided",
-		Message:            "MC and DNS zone selected",
-		ObservedGeneration: cluster.Generation,
-		LastTransitionTime: metav1.Now(),
-	})
-	setCondition(&cluster.Status.Conditions, metav1.Condition{
-		Type:               "Available",
-		Status:             metav1.ConditionTrue,
-		Reason:             "PlacementReady",
 		Message:            fmt.Sprintf("Management cluster: %s, base domain: %s", mc, domain),
 		ObservedGeneration: cluster.Generation,
 		LastTransitionTime: metav1.Now(),

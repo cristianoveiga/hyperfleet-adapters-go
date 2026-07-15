@@ -170,7 +170,7 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 
 	if mwStatus == nil {
 		setCondition(&cluster.Status.Conditions, metav1.Condition{
-			Type:               "Applied",
+			Type:               "ManifestWorkApplied",
 			Status:             metav1.ConditionFalse,
 			Reason:             "ManifestWorkNotFound",
 			Message:            "ManifestWork has not been processed yet",
@@ -178,7 +178,7 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 			LastTransitionTime: metav1.Now(),
 		})
 		setCondition(&cluster.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               "HostedClusterAvailable",
 			Status:             metav1.ConditionFalse,
 			Reason:             "ManifestWorkNotFound",
 			Message:            "ManifestWork has not been processed yet",
@@ -188,10 +188,10 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 		return
 	}
 
-	// Derive Applied condition from top-level MW conditions.
+	// Derive ManifestWorkApplied condition from top-level MW conditions.
 	appliedStatus := conditionStatus(mwStatus.Conditions, "Applied")
 
-	// Derive Available from HC manifest statusFeedback (index 3).
+	// Derive HostedClusterAvailable from HC manifest statusFeedback (index 3).
 	availableStatus := string(metav1.ConditionFalse)
 	if len(mwStatus.ResourceStatuses) > hostedClusterManifestIndex {
 		hcFeedback := mwStatus.ResourceStatuses[hostedClusterManifestIndex]
@@ -201,14 +201,14 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	}
 
 	setCondition(&cluster.Status.Conditions, metav1.Condition{
-		Type:               "Applied",
+		Type:               "ManifestWorkApplied",
 		Status:             metav1.ConditionStatus(appliedStatus),
 		Reason:             "ManifestWorkApplied",
 		ObservedGeneration: gen,
 		LastTransitionTime: metav1.Now(),
 	})
 	setCondition(&cluster.Status.Conditions, metav1.Condition{
-		Type:               "Available",
+		Type:               "HostedClusterAvailable",
 		Status:             metav1.ConditionStatus(availableStatus),
 		Reason:             "HostedClusterAvailable",
 		ObservedGeneration: gen,

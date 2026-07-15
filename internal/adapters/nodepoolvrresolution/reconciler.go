@@ -97,25 +97,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, nil
 	}
 
-	// Write VR result and conditions to status.
+	// Write VR result and NodePoolVersionResolved condition to status.
 	np.Status.VersionResolution = &privatev1.VersionResolutionResult{
 		ReleaseImage:   info.Payload,
 		ReleaseVersion: info.Version,
 		ReleaseChannel: channel,
 	}
 	setCondition(&np.Status.Conditions, metav1.Condition{
-		Type:               "Applied",
+		Type:               "NodePoolVersionResolved",
 		Status:             metav1.ConditionTrue,
 		Reason:             "VersionResolved",
-		Message:            fmt.Sprintf("Version %s resolved", version),
-		ObservedGeneration: np.Generation,
-		LastTransitionTime: metav1.Now(),
-	})
-	setCondition(&np.Status.Conditions, metav1.Condition{
-		Type:               "Available",
-		Status:             metav1.ConditionTrue,
-		Reason:             "VersionResolved",
-		Message:            fmt.Sprintf("Version %s resolved", version),
+		Message:            fmt.Sprintf("Version %s resolved to image %s", version, info.Payload),
 		ObservedGeneration: np.Generation,
 		LastTransitionTime: metav1.Now(),
 	})
