@@ -1,0 +1,83 @@
+package grpcsource
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/openshift-online/ocm-sdk-go/logging"
+	"k8s.io/client-go/rest"
+	workv1client "open-cluster-management.io/api/client/work/clientset/versioned/typed/work/v1"
+	workpayload "open-cluster-management.io/sdk-go/pkg/cloudevents/clients/work/payload"
+	sourceclient "open-cluster-management.io/sdk-go/pkg/cloudevents/clients/work/source/client"
+	sourcecodec "open-cluster-management.io/sdk-go/pkg/cloudevents/clients/work/source/codec"
+	ceclients "open-cluster-management.io/sdk-go/pkg/cloudevents/generic/clients"
+	"open-cluster-management.io/sdk-go/pkg/cloudevents/generic/options/grpc"
+
+	"github.com/openshift-online/maestro/pkg/api/openapi"
+)
+
+func NewMaestroGRPCSourceWorkClient(
+	ctx context.Context,
+	logger logging.Logger,
+	apiClient *openapi.APIClient,
+	opts *grpc.GRPCOptions,
+	sourceID string,
+) (workv1client.WorkV1Interface, error) {
+	if len(sourceID) == 0 {
+		return nil, fmt.Errorf("source id is required")
+	}
+
+	watcherStore := newRESTFulAPIWatcherStore(ctx, logger, apiClient, sourceID)
+
+	cloudEventsClient, err := ceclients.NewCloudEventSourceClient(
+		ctx,
+		grpc.NewSourceOptions(opts, sourceID, workpayload.ManifestBundleEventDataType),
+		nil, // resync is disabled, so lister is not required
+		nil, // resync is disabled, so status hash is not required
+		sourcecodec.NewManifestBundleCodec(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	cloudEventsClient.Subscribe(ctx, watcherStore.HandleReceivedResource)
+
+	// start a go routine to receive client reconnect signal
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-cloudEventsClient.SubscribedChan():
+				// reconnect happened, sync the works for current watchers
+				if err := watcherStore.Sync(); err != nil {
+					logger.Error(ctx, "failed to sync the works %v", err)
+				}
+			}
+		}
+	}()
+
+	manifestWorkClient := sourceclient.NewManifestWorkSourceClient(sourceID, watcherStore, cloudEventsClient)
+	return &WorkV1ClientWrapper{ManifestWorkClient: manifestWorkClient}, nil
+
+}
+
+// WorkV1ClientWrapper wraps a ManifestWork client to a WorkV1Interface
+type WorkV1ClientWrapper struct {
+	ManifestWorkClient *sourceclient.ManifestWorkSourceClient
+}
+
+var _ workv1client.WorkV1Interface = &WorkV1ClientWrapper{}
+
+func (c *WorkV1ClientWrapper) ManifestWorks(namespace string) workv1client.ManifestWorkInterface {
+	c.ManifestWorkClient.SetNamespace(namespace)
+	return c.ManifestWorkClient
+}
+
+func (c *WorkV1ClientWrapper) AppliedManifestWorks() workv1client.AppliedManifestWorkInterface {
+	return nil
+}
+
+func (c *WorkV1ClientWrapper) RESTClient() rest.Interface {
+	return nil
+}
