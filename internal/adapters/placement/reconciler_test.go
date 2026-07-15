@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
@@ -71,7 +71,7 @@ func (m *mockStatusWriter) Apply(_ context.Context, _ runtime.ApplyConfiguration
 
 // mockStoreClient is a minimal client.Client that captures Update/Status calls.
 type mockStoreClient struct {
-	cluster      *privatev1alpha1.Cluster
+	cluster      *privatev1.Cluster
 	getErr       error
 	updateErr    error
 	statusWriter *mockStatusWriter
@@ -85,7 +85,7 @@ func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.
 	if m.cluster == nil {
 		return apierrors.NewNotFound(schema.GroupResource{Resource: "cluster"}, "")
 	}
-	c, ok := obj.(*privatev1alpha1.Cluster)
+	c, ok := obj.(*privatev1.Cluster)
 	if !ok {
 		return fmt.Errorf("unexpected type %T", obj)
 	}
@@ -132,12 +132,12 @@ func (m *mockStoreClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVer
 func (m *mockStoreClient) IsObjectNamespaced(_ runtime.Object) (bool, error) { return false, nil }
 
 // buildCluster builds a Cluster for use in tests.
-func buildCluster(id string, placed bool) *privatev1alpha1.Cluster {
-	c := &privatev1alpha1.Cluster{}
+func buildCluster(id string, placed bool) *privatev1.Cluster {
+	c := &privatev1.Cluster{}
 	c.SetName(id)
 	c.SetNamespace("hyperfleet")
 	if placed {
-		c.Status.PlacementResult = &privatev1alpha1.PlacementResult{
+		c.Status.PlacementResult = &privatev1.PlacementResult{
 			ManagementClusterName: "mc-us-c1",
 			BaseDomain:            "hc-us-central1-abc.example.com",
 		}
@@ -149,7 +149,7 @@ func TestReconciler(t *testing.T) {
 	tests := []struct {
 		name           string
 		clusterID      string
-		cluster        *privatev1alpha1.Cluster // nil → NotFound
+		cluster        *privatev1.Cluster // nil → NotFound
 		selector       *mockSelector
 		expectUpdate   bool
 		expectedResult reconcile.Result

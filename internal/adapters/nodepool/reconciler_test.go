@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport/mock"
@@ -60,8 +60,8 @@ func (m *mockStatusWriter) Apply(_ context.Context, _ runtime.ApplyConfiguration
 
 // mockStoreClient is a minimal client.Client backed by a fixed NodePool and Cluster.
 type mockStoreClient struct {
-	nodepool     *privatev1alpha1.NodePool
-	cluster      *privatev1alpha1.Cluster
+	nodepool     *privatev1.NodePool
+	cluster      *privatev1.Cluster
 	npGetErr     error
 	clsGetErr    error
 	statusWriter *mockStatusWriter
@@ -69,7 +69,7 @@ type mockStoreClient struct {
 
 func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
 	switch o := obj.(type) {
-	case *privatev1alpha1.NodePool:
+	case *privatev1.NodePool:
 		if m.npGetErr != nil {
 			return m.npGetErr
 		}
@@ -78,7 +78,7 @@ func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.
 		}
 		*o = *m.nodepool
 		return nil
-	case *privatev1alpha1.Cluster:
+	case *privatev1.Cluster:
 		if m.clsGetErr != nil {
 			return m.clsGetErr
 		}
@@ -136,15 +136,15 @@ func npReq(clusterID, nodepoolID string) reconcile.Request {
 }
 
 // testNodePool creates a NodePool with VR ready.
-func testNodePool(vrVersion string) *privatev1alpha1.NodePool {
-	np := &privatev1alpha1.NodePool{}
+func testNodePool(vrVersion string) *privatev1.NodePool {
+	np := &privatev1.NodePool{}
 	np.SetName("np-test")
 	np.SetNamespace("cluster-test")
-	np.Spec = privatev1alpha1.NodePoolSpec{
+	np.Spec = privatev1.NodePoolSpec{
 		ClusterID: "cluster-test",
-		Platform: privatev1alpha1.NodePoolPlatformSpec{
+		Platform: privatev1.NodePoolPlatformSpec{
 			Type: "GCP",
-			GCP: &privatev1alpha1.GCPNodePoolPlatform{
+			GCP: &privatev1.GCPNodePoolPlatform{
 				MachineType: "n2-standard-4",
 				DiskSize:    100,
 				DiskType:    "pd-ssd",
@@ -153,7 +153,7 @@ func testNodePool(vrVersion string) *privatev1alpha1.NodePool {
 		},
 	}
 	if vrVersion != "" {
-		np.Status.VersionResolution = &privatev1alpha1.VersionResolutionResult{
+		np.Status.VersionResolution = &privatev1.VersionResolutionResult{
 			ReleaseImage:   "quay.io/openshift-release-dev/ocp-release:4.16.0-x86_64",
 			ReleaseVersion: vrVersion,
 		}
@@ -162,21 +162,21 @@ func testNodePool(vrVersion string) *privatev1alpha1.NodePool {
 }
 
 // testCluster creates a Cluster with placement ready and HC Available condition set.
-func testCluster(placementReady, hcAvailable bool) *privatev1alpha1.Cluster {
-	c := &privatev1alpha1.Cluster{}
+func testCluster(placementReady, hcAvailable bool) *privatev1.Cluster {
+	c := &privatev1.Cluster{}
 	c.SetName("cluster-test")
 	c.SetNamespace("hyperfleet")
-	c.Spec = privatev1alpha1.ClusterSpec{
-		Platform: privatev1alpha1.ClusterPlatformSpec{
+	c.Spec = privatev1.ClusterSpec{
+		Platform: privatev1.ClusterPlatformSpec{
 			Type: "GCP",
-			GCP: &privatev1alpha1.GCPClusterPlatform{
+			GCP: &privatev1.GCPClusterPlatform{
 				Subnet: "my-subnet",
 				Region: "us-central1",
 			},
 		},
 	}
 	if placementReady {
-		c.Status.PlacementResult = &privatev1alpha1.PlacementResult{
+		c.Status.PlacementResult = &privatev1.PlacementResult{
 			ManagementClusterName: "mc-us-c1",
 			BaseDomain:            "hc.example.com",
 		}
@@ -192,8 +192,8 @@ func testCluster(placementReady, hcAvailable bool) *privatev1alpha1.Cluster {
 // buildReconciler wires up a nodepool Reconciler.
 func buildReconciler(
 	t *testing.T,
-	np *privatev1alpha1.NodePool,
-	cluster *privatev1alpha1.Cluster,
+	np *privatev1.NodePool,
+	cluster *privatev1.Cluster,
 	tr *mock.Client,
 ) (*Reconciler, *mockStoreClient) {
 	t.Helper()

@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/hc"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport"
@@ -57,7 +57,7 @@ func (m *mockStatusWriter) Apply(_ context.Context, _ runtime.ApplyConfiguration
 
 // mockStoreClient is a minimal client.Client backed by a fixed Cluster.
 type mockStoreClient struct {
-	cluster      *privatev1alpha1.Cluster
+	cluster      *privatev1.Cluster
 	getErr       error
 	statusWriter *mockStatusWriter
 }
@@ -69,7 +69,7 @@ func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.
 	if m.cluster == nil {
 		return apierrors.NewNotFound(schema.GroupResource{Resource: "cluster"}, "")
 	}
-	c, ok := obj.(*privatev1alpha1.Cluster)
+	c, ok := obj.(*privatev1.Cluster)
 	if !ok {
 		return fmt.Errorf("unexpected type %T", obj)
 	}
@@ -121,17 +121,17 @@ func clusterReq(name string) reconcile.Request {
 }
 
 // buildReadyCluster creates a Cluster with placement and VR results set.
-func buildReadyCluster(clusterID, version string) *privatev1alpha1.Cluster {
-	c := &privatev1alpha1.Cluster{}
+func buildReadyCluster(clusterID, version string) *privatev1.Cluster {
+	c := &privatev1.Cluster{}
 	c.SetName(clusterID)
 	c.SetNamespace("hyperfleet")
 	c.SetGeneration(2)
-	c.Spec = privatev1alpha1.ClusterSpec{
+	c.Spec = privatev1.ClusterSpec{
 		InfraID: "infra-xyz",
-		Release: &privatev1alpha1.ClusterReleaseSpec{Version: version},
-		Platform: privatev1alpha1.ClusterPlatformSpec{
+		Release: &privatev1.ClusterReleaseSpec{Version: version},
+		Platform: privatev1.ClusterPlatformSpec{
 			Type: "GCP",
-			GCP: &privatev1alpha1.GCPClusterPlatform{
+			GCP: &privatev1.GCPClusterPlatform{
 				ProjectID: "my-project",
 				Region:    "us-central1",
 				Network:   "my-vpc",
@@ -139,12 +139,12 @@ func buildReadyCluster(clusterID, version string) *privatev1alpha1.Cluster {
 			},
 		},
 	}
-	c.Status = privatev1alpha1.ClusterStatus{
-		PlacementResult: &privatev1alpha1.PlacementResult{
+	c.Status = privatev1.ClusterStatus{
+		PlacementResult: &privatev1.PlacementResult{
 			ManagementClusterName: "mc-cluster-1",
 			BaseDomain:            "example.com",
 		},
-		VersionResolution: &privatev1alpha1.VersionResolutionResult{
+		VersionResolution: &privatev1.VersionResolutionResult{
 			ReleaseImage:   "quay.io/openshift-release-dev/ocp-release:4.15.0-x86_64",
 			ReleaseVersion: version,
 			ReleaseChannel: "stable-4.15",
@@ -156,7 +156,7 @@ func buildReadyCluster(clusterID, version string) *privatev1alpha1.Cluster {
 // buildReconciler wires up an hc.Reconciler backed by the store client and transport mock.
 func buildReconciler(
 	t *testing.T,
-	cluster *privatev1alpha1.Cluster,
+	cluster *privatev1.Cluster,
 	tr *mock.Client,
 ) (*hc.Reconciler, *mockStoreClient) {
 	t.Helper()
@@ -199,10 +199,10 @@ func TestReconcile_HappyPath(t *testing.T) {
 // TestReconcile_DependenciesNotReady_NoPlacement verifies requeue when placement is missing.
 func TestReconcile_DependenciesNotReady_NoPlacement(t *testing.T) {
 	clusterID := "cluster-abc"
-	cluster := &privatev1alpha1.Cluster{}
+	cluster := &privatev1.Cluster{}
 	cluster.SetName(clusterID)
 	cluster.SetNamespace("hyperfleet")
-	cluster.Status.VersionResolution = &privatev1alpha1.VersionResolutionResult{
+	cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{
 		ReleaseImage:   "quay.io/openshift-release-dev/ocp-release:4.15.0-x86_64",
 		ReleaseVersion: "4.15.0",
 	}
@@ -222,7 +222,7 @@ func TestReconcile_DependenciesNotReady_VRVersionMismatch(t *testing.T) {
 	clusterID := "cluster-abc"
 	// Cluster wants 4.15.0 but VR resolved 4.14.9.
 	cluster := buildReadyCluster(clusterID, "4.14.9")
-	cluster.Spec.Release = &privatev1alpha1.ClusterReleaseSpec{Version: "4.15.0"}
+	cluster.Spec.Release = &privatev1.ClusterReleaseSpec{Version: "4.15.0"}
 
 	tr := mock.New()
 	r, _ := buildReconciler(t, cluster, tr)

@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/hc/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport"
@@ -48,7 +48,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	clusterID := req.Name
 	log := r.log.With("adapter", adapterName).With("cluster_id", clusterID)
 
-	var cluster privatev1alpha1.Cluster
+	var cluster privatev1.Cluster
 	if err := r.client.Get(ctx, req.NamespacedName, &cluster); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Infof(ctx, "cluster not found, skipping")
@@ -165,7 +165,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 }
 
 // applyStatusConditions derives conditions from the ManifestWork status and writes them to the cluster.
-func (r *Reconciler) applyStatusConditions(cluster *privatev1alpha1.Cluster, mwStatus *transport.ManifestWorkStatus) {
+func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus *transport.ManifestWorkStatus) {
 	gen := cluster.Generation
 
 	if mwStatus == nil {

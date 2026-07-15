@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/nodepool/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport"
@@ -48,7 +48,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	log := r.log.With("clusterID", clusterID).With("nodepoolID", nodepoolID)
 
 	// Read nodepool from cache.
-	var np privatev1alpha1.NodePool
+	var np privatev1.NodePool
 	if err := r.client.Get(ctx, req.NamespacedName, &np); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Infof(ctx, "nodepool %s not found, skipping", nodepoolID)
@@ -58,7 +58,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Read parent cluster from cache (namespace="hyperfleet", name=clusterID).
-	var cluster privatev1alpha1.Cluster
+	var cluster privatev1.Cluster
 	clusterKey := types.NamespacedName{Namespace: "hyperfleet", Name: clusterID}
 	if err := r.client.Get(ctx, clusterKey, &cluster); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -178,7 +178,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 }
 
 // applyStatusConditions derives conditions from the ManifestWork status and writes them to the nodepool.
-func (r *Reconciler) applyStatusConditions(np *privatev1alpha1.NodePool, mwStatus *transport.ManifestWorkStatus) {
+func (r *Reconciler) applyStatusConditions(np *privatev1.NodePool, mwStatus *transport.ManifestWorkStatus) {
 	gen := np.Generation
 
 	if mwStatus == nil {

@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
@@ -57,7 +57,7 @@ func (m *mockStatusWriter) Apply(_ context.Context, _ runtime.ApplyConfiguration
 
 // mockStoreClient is a minimal client.Client backed by a fixed Cluster.
 type mockStoreClient struct {
-	cluster      *privatev1alpha1.Cluster
+	cluster      *privatev1.Cluster
 	getErr       error
 	updateCalled bool
 	statusWriter *mockStatusWriter
@@ -70,7 +70,7 @@ func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.
 	if m.cluster == nil {
 		return apierrors.NewNotFound(schema.GroupResource{Resource: "cluster"}, "")
 	}
-	c, ok := obj.(*privatev1alpha1.Cluster)
+	c, ok := obj.(*privatev1.Cluster)
 	if !ok {
 		return fmt.Errorf("unexpected type %T", obj)
 	}
@@ -139,7 +139,7 @@ func clusterReq(name string) reconcile.Request {
 // buildReconciler wires up a Reconciler backed by the store client and Cincinnati mock.
 func buildReconciler(
 	t *testing.T,
-	cluster *privatev1alpha1.Cluster,
+	cluster *privatev1.Cluster,
 	cincSrv *httptest.Server,
 ) (*Reconciler, *mockStoreClient) {
 	t.Helper()
@@ -158,11 +158,11 @@ func TestReconciler_HappyPath(t *testing.T) {
 	cincSrv := newMockCincinnati(release)
 	defer cincSrv.Close()
 
-	cluster := &privatev1alpha1.Cluster{}
+	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-1")
 	cluster.SetNamespace("hyperfleet")
 	cluster.SetGeneration(3)
-	cluster.Spec.Release = &privatev1alpha1.ClusterReleaseSpec{Version: "4.22.0-ec.4"}
+	cluster.Spec.Release = &privatev1.ClusterReleaseSpec{Version: "4.22.0-ec.4"}
 
 	r, storeClient := buildReconciler(t, cluster, cincSrv)
 
@@ -179,11 +179,11 @@ func TestReconciler_AlreadyResolved(t *testing.T) {
 	cincSrv := newMockCincinnati(nil)
 	defer cincSrv.Close()
 
-	cluster := &privatev1alpha1.Cluster{}
+	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-2")
 	cluster.SetNamespace("hyperfleet")
-	cluster.Spec.Release = &privatev1alpha1.ClusterReleaseSpec{Version: "4.22.0-ec.4"}
-	cluster.Status.VersionResolution = &privatev1alpha1.VersionResolutionResult{
+	cluster.Spec.Release = &privatev1.ClusterReleaseSpec{Version: "4.22.0-ec.4"}
+	cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{
 		ReleaseImage:   "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
 		ReleaseVersion: "4.22.0-ec.4",
 		ReleaseChannel: "candidate-4.22",
@@ -214,7 +214,7 @@ func TestReconciler_VersionNotSet(t *testing.T) {
 	cincSrv := newMockCincinnati(nil)
 	defer cincSrv.Close()
 
-	cluster := &privatev1alpha1.Cluster{}
+	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-3")
 	cluster.SetNamespace("hyperfleet")
 	// Release is nil — version not set
@@ -233,10 +233,10 @@ func TestReconciler_VersionNotInCincinnati(t *testing.T) {
 	cincSrv := newMockCincinnati(nil)
 	defer cincSrv.Close()
 
-	cluster := &privatev1alpha1.Cluster{}
+	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-5")
 	cluster.SetNamespace("hyperfleet")
-	cluster.Spec.Release = &privatev1alpha1.ClusterReleaseSpec{Version: "4.22.0-ec.4"}
+	cluster.Spec.Release = &privatev1.ClusterReleaseSpec{Version: "4.22.0-ec.4"}
 
 	r, storeClient := buildReconciler(t, cluster, cincSrv)
 

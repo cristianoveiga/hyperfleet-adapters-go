@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/versionresolution"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
@@ -35,15 +35,15 @@ func newTestLogger(t *testing.T) logger.Logger {
 
 // mockStoreClient is a minimal client.Client backed by a fixed NodePool and Cluster.
 type mockStoreClient struct {
-	nodepool  *privatev1alpha1.NodePool
-	cluster   *privatev1alpha1.Cluster
+	nodepool  *privatev1.NodePool
+	cluster   *privatev1.Cluster
 	npGetErr  error
 	clsGetErr error
 }
 
 func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
 	switch o := obj.(type) {
-	case *privatev1alpha1.NodePool:
+	case *privatev1.NodePool:
 		if m.npGetErr != nil {
 			return m.npGetErr
 		}
@@ -52,7 +52,7 @@ func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.
 		}
 		*o = *m.nodepool
 		return nil
-	case *privatev1alpha1.Cluster:
+	case *privatev1.Cluster:
 		if m.clsGetErr != nil {
 			return m.clsGetErr
 		}
@@ -106,8 +106,8 @@ func npReq(clusterID, nodepoolID string) reconcile.Request {
 // buildReconciler wires up a Reconciler backed by the store client.
 func buildReconciler(
 	t *testing.T,
-	np *privatev1alpha1.NodePool,
-	cluster *privatev1alpha1.Cluster,
+	np *privatev1.NodePool,
+	cluster *privatev1.Cluster,
 ) *Reconciler {
 	t.Helper()
 	// Cincinnati client is created but the current reconciler returns early before
@@ -129,7 +129,7 @@ func TestReconciler_NodepoolNotFound(t *testing.T) {
 }
 
 func TestReconciler_ClusterNotFoundForNodepool(t *testing.T) {
-	np := &privatev1alpha1.NodePool{}
+	np := &privatev1.NodePool{}
 	np.SetName("np-1")
 	np.SetNamespace("cluster-1")
 
@@ -142,15 +142,15 @@ func TestReconciler_ClusterNotFoundForNodepool(t *testing.T) {
 }
 
 func TestReconciler_AlreadyResolved(t *testing.T) {
-	np := &privatev1alpha1.NodePool{}
+	np := &privatev1.NodePool{}
 	np.SetName("np-2")
 	np.SetNamespace("cluster-1")
-	np.Status.VersionResolution = &privatev1alpha1.VersionResolutionResult{
+	np.Status.VersionResolution = &privatev1.VersionResolutionResult{
 		ReleaseImage:   "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
 		ReleaseVersion: "4.22.0-ec.4",
 	}
 
-	cluster := &privatev1alpha1.Cluster{}
+	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-1")
 	cluster.SetNamespace("hyperfleet")
 
@@ -165,11 +165,11 @@ func TestReconciler_AlreadyResolved(t *testing.T) {
 func TestReconciler_NoVersionResolution_ReturnsNoOp(t *testing.T) {
 	// NodePool has no VersionResolution and no Release field (pending types).
 	// Reconciler should return early with no-op.
-	np := &privatev1alpha1.NodePool{}
+	np := &privatev1.NodePool{}
 	np.SetName("np-3")
 	np.SetNamespace("cluster-1")
 
-	cluster := &privatev1alpha1.Cluster{}
+	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-1")
 	cluster.SetNamespace("hyperfleet")
 

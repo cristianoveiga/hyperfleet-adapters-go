@@ -10,7 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
@@ -44,7 +44,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	clusterID := req.Name
 
 	// Step 1: Read cluster from the cache.
-	var cluster privatev1alpha1.Cluster
+	var cluster privatev1.Cluster
 	if err := r.client.Get(ctx, req.NamespacedName, &cluster); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.log.Infof(ctx, "placement: cluster %s not found, skipping", clusterID)
@@ -69,7 +69,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	r.log.Infof(ctx, "placement: cluster %s: selected MC %s, domain %s", clusterID, mc, domain)
 
 	// Step 4: Write placement result and status conditions to status.
-	cluster.Status.PlacementResult = &privatev1alpha1.PlacementResult{
+	cluster.Status.PlacementResult = &privatev1.PlacementResult{
 		ManagementClusterName: mc,
 		BaseDomain:            domain,
 	}

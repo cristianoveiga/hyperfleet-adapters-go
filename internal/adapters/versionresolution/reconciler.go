@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
@@ -42,7 +42,7 @@ func NewReconciler(cincinnati *CincinnatiClient, log logger.Logger, c client.Cli
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	clusterID := req.Name
 
-	var cluster privatev1alpha1.Cluster
+	var cluster privatev1.Cluster
 	if err := r.client.Get(ctx, req.NamespacedName, &cluster); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.log.Infof(ctx, "vr: cluster %s not found, skipping", clusterID)
@@ -80,7 +80,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Write VR result and status conditions to status.
-	cluster.Status.VersionResolution = &privatev1alpha1.VersionResolutionResult{
+	cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{
 		ReleaseImage:   info.Payload,
 		ReleaseVersion: info.Version,
 		ReleaseChannel: channel,

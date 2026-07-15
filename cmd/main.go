@@ -14,7 +14,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 
-	privatev1alpha1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1alpha1"
+	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	hcadapter "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/hc"
 	nodepooladapter "github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/nodepool"
@@ -106,7 +106,7 @@ func newLogger(rf *rootFlags, component string) (logger.Logger, error) {
 // newScheme creates a runtime.Scheme with HyperFleet types registered.
 func newScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
-	if err := privatev1alpha1.AddToScheme(scheme); err != nil {
+	if err := privatev1.AddToScheme(scheme); err != nil {
 		panic(fmt.Sprintf("failed to register HyperFleet types: %v", err))
 	}
 	return scheme
@@ -152,7 +152,7 @@ func newVersionResolutionCmd(rf *rootFlags) *cobra.Command {
 			rec := versionresolution.NewReconciler(cinClient, log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
-				For(&privatev1alpha1.Cluster{}).
+				For(&privatev1.Cluster{}).
 				WithOptions(controllerOpts(rf)).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
@@ -194,7 +194,7 @@ func newNodepoolVRCmd(rf *rootFlags) *cobra.Command {
 			rec := nodepoolvrresolution.NewReconciler(cinClient, log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
-				For(&privatev1alpha1.NodePool{}).
+				For(&privatev1.NodePool{}).
 				WithOptions(controllerOpts(rf)).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
@@ -265,7 +265,7 @@ func newPlacementCmd(rf *rootFlags) *cobra.Command {
 			rec := placementadapter.NewReconciler(selector, candidates, log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
-				For(&privatev1alpha1.Cluster{}).
+				For(&privatev1.Cluster{}).
 				WithOptions(controllerOpts(rf)).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
@@ -321,7 +321,7 @@ func newHCCmd(rf *rootFlags) *cobra.Command {
 			rec := hcadapter.New(transport, log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
-				For(&privatev1alpha1.Cluster{}).
+				For(&privatev1.Cluster{}).
 				WithOptions(controllerOpts(rf)).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
@@ -378,7 +378,7 @@ func newNodepoolCmd(rf *rootFlags) *cobra.Command {
 			rec := nodepooladapter.New(transport, log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
-				For(&privatev1alpha1.NodePool{}).
+				For(&privatev1.NodePool{}).
 				WithOptions(controllerOpts(rf)).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
