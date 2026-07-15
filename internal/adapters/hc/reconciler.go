@@ -131,7 +131,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		CreatedBy:            "", // TODO: not in types
 		InfraID:              cluster.Spec.InfraID,
 		IssuerURL:            cluster.Spec.IssuerURL,
-		ClusterIDUUID:        "", // TODO: not in types
+		ClusterIDUUID:        string(cluster.UID),
 		GCPProjectID:         gcpProjectID,
 		GCPRegion:            gcpRegion,
 		GCPNetwork:           gcpNetwork,
