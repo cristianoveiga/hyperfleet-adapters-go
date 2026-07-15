@@ -12,6 +12,7 @@ import (
 
 	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/conditions"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
 
@@ -68,18 +69,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	r.log.Infof(ctx, "placement: cluster %s: selected MC %s, domain %s", clusterID, mc, domain)
 
-	// Step 4: Write placement result and status conditions to status.
+	// Step 4: Write placement result and ManagementClusterSelected condition to status.
 	cluster.Status.PlacementResult = &privatev1.PlacementResult{
 		ManagementClusterName: mc,
 		BaseDomain:            domain,
 	}
-	setCondition(&cluster.Status.Conditions, metav1.Condition{
+	conditions.Set(&cluster.Status.Conditions, metav1.Condition{
 		Type:               "ManagementClusterSelected",
 		Status:             metav1.ConditionTrue,
 		Reason:             "PlacementDecided",
 		Message:            fmt.Sprintf("Management cluster: %s, base domain: %s", mc, domain),
 		ObservedGeneration: cluster.Generation,
-		LastTransitionTime: metav1.Now(),
 	})
 	if err := r.client.Status().Update(ctx, &cluster); err != nil {
 		if apierrors.IsConflict(err) {
@@ -88,26 +88,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("placement: update cluster status %s: %w", clusterID, err)
 	}
 
-	// Step 6: Requeue.
 	r.log.Infof(ctx, "placement: cluster %s placed, requeueing after %s", clusterID, requeueAfter)
 	return reconcile.Result{RequeueAfter: requeueAfter}, nil
-}
-
-// setCondition upserts a condition into the slice, preserving timestamps when status is unchanged.
-func setCondition(conditions *[]metav1.Condition, c metav1.Condition) {
-	if c.LastTransitionTime.IsZero() {
-		c.LastTransitionTime = metav1.Now()
-	}
-	for i, existing := range *conditions {
-		if existing.Type == c.Type {
-			if existing.Status != c.Status {
-				c.LastTransitionTime = metav1.Now()
-			} else {
-				c.LastTransitionTime = existing.LastTransitionTime
-			}
-			(*conditions)[i] = c
-			return
-		}
-	}
-	*conditions = append(*conditions, c)
 }

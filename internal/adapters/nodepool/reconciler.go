@@ -15,6 +15,7 @@ import (
 	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/nodepool/manifest"
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/conditions"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
@@ -72,18 +73,33 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	// Gate: cluster placement must be ready.
 	if cluster.Status.PlacementResult == nil || cluster.Status.PlacementResult.ManagementClusterName == "" {
 		log.Infof(ctx, "placement not ready for nodepool %s, waiting for next event", nodepoolID)
+		if setWaitingNPConditions(&np, "PlacementNotReady", "Waiting for cluster placement to select a management cluster") {
+			if err := r.client.Status().Update(ctx, &np); err != nil && !apierrors.IsConflict(err) {
+				return reconcile.Result{}, fmt.Errorf("nodepool reconciler: update nodepool status: %w", err)
+			}
+		}
 		return reconcile.Result{}, nil
 	}
 
-	// Gate: HC must be Available (check cluster status conditions).
-	if !isConditionTrue(cluster.Status.Conditions, "Available") {
+	// Gate: HC must be Available (HostedClusterAvailable condition on the cluster).
+	if !isConditionTrue(cluster.Status.Conditions, "HostedClusterAvailable") {
 		log.Infof(ctx, "hc not available for nodepool %s, waiting for next event", nodepoolID)
+		if setWaitingNPConditions(&np, "HostedClusterNotAvailable", "Waiting for HostedCluster to become available") {
+			if err := r.client.Status().Update(ctx, &np); err != nil && !apierrors.IsConflict(err) {
+				return reconcile.Result{}, fmt.Errorf("nodepool reconciler: update nodepool status: %w", err)
+			}
+		}
 		return reconcile.Result{}, nil
 	}
 
 	// Gate: nodepool VR must be ready.
 	if np.Status.VersionResolution == nil || np.Status.VersionResolution.ReleaseVersion == "" {
 		log.Infof(ctx, "nodepool VR not ready for nodepool %s, waiting for next event", nodepoolID)
+		if setWaitingNPConditions(&np, "VersionResolutionNotReady", "Waiting for nodepool version resolution") {
+			if err := r.client.Status().Update(ctx, &np); err != nil && !apierrors.IsConflict(err) {
+				return reconcile.Result{}, fmt.Errorf("nodepool reconciler: update nodepool status: %w", err)
+			}
+		}
 		return reconcile.Result{}, nil
 	}
 
@@ -91,6 +107,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if np.Spec.Release != nil && np.Status.VersionResolution.ReleaseVersion != np.Spec.Release.Version {
 		log.Infof(ctx, "nodepool VR version %q does not match spec version %q, waiting for next event",
 			np.Status.VersionResolution.ReleaseVersion, np.Spec.Release.Version)
+		msg := fmt.Sprintf("VR version %q does not match spec version %q",
+			np.Status.VersionResolution.ReleaseVersion, np.Spec.Release.Version)
+		if setWaitingNPConditions(&np, "VersionMismatch", msg) {
+			if err := r.client.Status().Update(ctx, &np); err != nil && !apierrors.IsConflict(err) {
+				return reconcile.Result{}, fmt.Errorf("nodepool reconciler: update nodepool status: %w", err)
+			}
+		}
 		return reconcile.Result{}, nil
 	}
 
@@ -131,10 +154,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	mw, err := manifest.Build(manifest.Input{
 		NodePoolID:         nodepoolID,
-		NodePoolName:       np.Name, // DisplayName gone — use Name
+		NodePoolName:       np.Name,
 		NodePoolGeneration: np.Generation,
 		ClusterID:          clusterID,
-		ClusterName:        cluster.Name, // DisplayName gone — use Name
+		ClusterName:        cluster.Name,
 		Replicas:           defaultReplicas,
 		MachineType:        machineType,
 		GCPRegion:          gcpRegion,
@@ -165,39 +188,60 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		}
 	}
 
-	// Write nodepool status conditions.
-	r.applyStatusConditions(&np, mwStatus)
-	if err := r.client.Status().Update(ctx, &np); err != nil {
-		if apierrors.IsConflict(err) {
-			return reconcile.Result{}, nil
+	// Write nodepool status conditions — only update if something changed.
+	if r.applyStatusConditions(&np, mwStatus) {
+		if err := r.client.Status().Update(ctx, &np); err != nil {
+			if apierrors.IsConflict(err) {
+				return reconcile.Result{}, nil
+			}
+			return reconcile.Result{}, fmt.Errorf("nodepool reconciler: update nodepool status: %w", err)
 		}
-		return reconcile.Result{}, fmt.Errorf("nodepool reconciler: update nodepool status: %w", err)
 	}
 
 	log.Infof(ctx, "nodepool reconciler: nodepool %s reconciled, requeueing after %s", nodepoolID, requeueAfterApply)
 	return reconcile.Result{RequeueAfter: requeueAfterApply}, nil
 }
 
+// setWaitingNPConditions sets NodePoolManifestWorkApplied and NodePoolAvailable to Unknown.
+// Returns true if either condition changed.
+func setWaitingNPConditions(np *privatev1.NodePool, reason, message string) bool {
+	gen := np.Generation
+	a := conditions.Set(&np.Status.Conditions, metav1.Condition{
+		Type:               "NodePoolManifestWorkApplied",
+		Status:             metav1.ConditionUnknown,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: gen,
+	})
+	b := conditions.Set(&np.Status.Conditions, metav1.Condition{
+		Type:               "NodePoolAvailable",
+		Status:             metav1.ConditionUnknown,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: gen,
+	})
+	return a || b
+}
+
 // applyStatusConditions derives conditions from the ManifestWork status and writes them to the nodepool.
-func (r *Reconciler) applyStatusConditions(np *privatev1.NodePool, mwStatus *transport.ManifestWorkStatus) {
+// Returns true if any condition changed.
+func (r *Reconciler) applyStatusConditions(np *privatev1.NodePool, mwStatus *transport.ManifestWorkStatus) bool {
 	gen := np.Generation
 
 	if mwStatus == nil {
-		setCondition(&np.Status.Conditions, metav1.Condition{
+		a := conditions.Set(&np.Status.Conditions, metav1.Condition{
 			Type:               "NodePoolManifestWorkApplied",
 			Status:             metav1.ConditionFalse,
 			Reason:             "ManifestWorkNotFound",
 			ObservedGeneration: gen,
-			LastTransitionTime: metav1.Now(),
 		})
-		setCondition(&np.Status.Conditions, metav1.Condition{
+		b := conditions.Set(&np.Status.Conditions, metav1.Condition{
 			Type:               "NodePoolAvailable",
 			Status:             metav1.ConditionFalse,
 			Reason:             "ManifestWorkNotFound",
 			ObservedGeneration: gen,
-			LastTransitionTime: metav1.Now(),
 		})
-		return
+		return a || b
 	}
 
 	// Extract conditions from top-level ManifestWork conditions.
@@ -214,7 +258,6 @@ func (r *Reconciler) applyStatusConditions(np *privatev1.NodePool, mwStatus *tra
 	// Extract resource status from manifest index 0 (the NodePool).
 	availableStatus := "False"
 	allNodesHealthy := "False"
-
 	if len(mwStatus.ResourceStatuses) > 0 {
 		rs := mwStatus.ResourceStatuses[0]
 		if v, ok := rs["readyCondition"]; ok {
@@ -230,54 +273,33 @@ func (r *Reconciler) applyStatusConditions(np *privatev1.NodePool, mwStatus *tra
 		healthStatus = metav1.ConditionTrue
 	}
 
-	setCondition(&np.Status.Conditions, metav1.Condition{
+	a := conditions.Set(&np.Status.Conditions, metav1.Condition{
 		Type:               "NodePoolManifestWorkApplied",
 		Status:             appliedStatus,
 		Reason:             appliedReason,
 		ObservedGeneration: gen,
-		LastTransitionTime: metav1.Now(),
 	})
-	setCondition(&np.Status.Conditions, metav1.Condition{
+	b := conditions.Set(&np.Status.Conditions, metav1.Condition{
 		Type:               "NodePoolAvailable",
 		Status:             metav1.ConditionStatus(availableStatus),
 		ObservedGeneration: gen,
-		LastTransitionTime: metav1.Now(),
 	})
-	setCondition(&np.Status.Conditions, metav1.Condition{
+	c := conditions.Set(&np.Status.Conditions, metav1.Condition{
 		Type:               "NodePoolHealthy",
 		Status:             healthStatus,
 		ObservedGeneration: gen,
-		LastTransitionTime: metav1.Now(),
 	})
+	return a || b || c
 }
 
 // isConditionTrue returns true when the named condition exists and its Status is metav1.ConditionTrue.
-func isConditionTrue(conditions []metav1.Condition, condType string) bool {
-	for _, c := range conditions {
+func isConditionTrue(conds []metav1.Condition, condType string) bool {
+	for _, c := range conds {
 		if c.Type == condType {
 			return c.Status == metav1.ConditionTrue
 		}
 	}
 	return false
-}
-
-// setCondition upserts a condition into the slice, preserving timestamps when status is unchanged.
-func setCondition(conditions *[]metav1.Condition, c metav1.Condition) {
-	if c.LastTransitionTime.IsZero() {
-		c.LastTransitionTime = metav1.Now()
-	}
-	for i, existing := range *conditions {
-		if existing.Type == c.Type {
-			if existing.Status != c.Status {
-				c.LastTransitionTime = metav1.Now()
-			} else {
-				c.LastTransitionTime = existing.LastTransitionTime
-			}
-			(*conditions)[i] = c
-			return
-		}
-	}
-	*conditions = append(*conditions, c)
 }
 
 // defaultReplicas is the hardcoded default for this POC.

@@ -15,6 +15,7 @@ import (
 	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/versionresolution"
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/conditions"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
 
@@ -68,6 +69,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	if np.Spec.Release == nil || np.Spec.Release.Version == "" {
 		r.log.Infof(ctx, "nodepool-vr: nodepool %s: release version not set, waiting for next event", nodepoolID)
+		if conditions.Set(&np.Status.Conditions, metav1.Condition{
+			Type:               "NodePoolVersionResolved",
+			Status:             metav1.ConditionUnknown,
+			Reason:             "ReleaseVersionNotSet",
+			Message:            "Release version not set in spec",
+			ObservedGeneration: np.Generation,
+		}) {
+			if err := r.client.Status().Update(ctx, &np); err != nil && !apierrors.IsConflict(err) {
+				return reconcile.Result{}, fmt.Errorf("nodepool-vr: update nodepool status %s: %w", nodepoolID, err)
+			}
+		}
 		return reconcile.Result{}, nil
 	}
 	version := np.Spec.Release.Version
@@ -94,6 +106,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 	if info == nil {
 		r.log.Warnf(ctx, "nodepool-vr: nodepool %s: version %s not found in Cincinnati, waiting for next event", nodepoolID, version)
+		if conditions.Set(&np.Status.Conditions, metav1.Condition{
+			Type:               "NodePoolVersionResolved",
+			Status:             metav1.ConditionFalse,
+			Reason:             "VersionNotFoundInCincinnati",
+			Message:            fmt.Sprintf("Version %s not found in Cincinnati channel %s", version, channel),
+			ObservedGeneration: np.Generation,
+		}) {
+			if err := r.client.Status().Update(ctx, &np); err != nil && !apierrors.IsConflict(err) {
+				return reconcile.Result{}, fmt.Errorf("nodepool-vr: update nodepool status %s: %w", nodepoolID, err)
+			}
+		}
 		return reconcile.Result{}, nil
 	}
 
@@ -103,13 +126,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		ReleaseVersion: info.Version,
 		ReleaseChannel: channel,
 	}
-	setCondition(&np.Status.Conditions, metav1.Condition{
+	conditions.Set(&np.Status.Conditions, metav1.Condition{
 		Type:               "NodePoolVersionResolved",
 		Status:             metav1.ConditionTrue,
 		Reason:             "VersionResolved",
 		Message:            fmt.Sprintf("Version %s resolved to image %s", version, info.Payload),
 		ObservedGeneration: np.Generation,
-		LastTransitionTime: metav1.Now(),
 	})
 	if err := r.client.Status().Update(ctx, &np); err != nil {
 		if apierrors.IsConflict(err) {
@@ -130,23 +152,4 @@ func buildChannel(version, channelGroup string) (string, error) {
 		return "", fmt.Errorf("invalid version %q: expected at least major.minor", version)
 	}
 	return fmt.Sprintf("%s-%s.%s", channelGroup, parts[0], parts[1]), nil
-}
-
-// setCondition upserts a condition into the slice, preserving timestamps when status is unchanged.
-func setCondition(conditions *[]metav1.Condition, c metav1.Condition) {
-	if c.LastTransitionTime.IsZero() {
-		c.LastTransitionTime = metav1.Now()
-	}
-	for i, existing := range *conditions {
-		if existing.Type == c.Type {
-			if existing.Status != c.Status {
-				c.LastTransitionTime = metav1.Now()
-			} else {
-				c.LastTransitionTime = existing.LastTransitionTime
-			}
-			(*conditions)[i] = c
-			return
-		}
-	}
-	*conditions = append(*conditions, c)
 }

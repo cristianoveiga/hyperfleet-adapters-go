@@ -14,6 +14,7 @@ import (
 	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/adapters/hc/manifest"
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/conditions"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/transport"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
@@ -60,12 +61,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	// Check placement readiness.
 	if cluster.Status.PlacementResult == nil || cluster.Status.PlacementResult.ManagementClusterName == "" {
 		log.Infof(ctx, "placement not ready, waiting for next event")
+		if r.setWaitingConditions(&cluster, "PlacementNotReady", "Waiting for placement to select a management cluster") {
+			if err := r.client.Status().Update(ctx, &cluster); err != nil && !apierrors.IsConflict(err) {
+				return reconcile.Result{}, fmt.Errorf("%s: update cluster status: %w", adapterName, err)
+			}
+		}
 		return reconcile.Result{}, nil
 	}
 
 	// Check version-resolution readiness.
 	if cluster.Status.VersionResolution == nil {
 		log.Infof(ctx, "version resolution not ready, waiting for next event")
+		if r.setWaitingConditions(&cluster, "VersionResolutionNotReady", "Waiting for version resolution") {
+			if err := r.client.Status().Update(ctx, &cluster); err != nil && !apierrors.IsConflict(err) {
+				return reconcile.Result{}, fmt.Errorf("%s: update cluster status: %w", adapterName, err)
+			}
+		}
 		return reconcile.Result{}, nil
 	}
 
@@ -73,6 +84,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if cluster.Spec.Release != nil && cluster.Status.VersionResolution.ReleaseVersion != cluster.Spec.Release.Version {
 		log.Infof(ctx, "vr version %q does not match spec version %q, waiting for next event",
 			cluster.Status.VersionResolution.ReleaseVersion, cluster.Spec.Release.Version)
+		msg := fmt.Sprintf("VR version %q does not match spec version %q",
+			cluster.Status.VersionResolution.ReleaseVersion, cluster.Spec.Release.Version)
+		if r.setWaitingConditions(&cluster, "VersionMismatch", msg) {
+			if err := r.client.Status().Update(ctx, &cluster); err != nil && !apierrors.IsConflict(err) {
+				return reconcile.Result{}, fmt.Errorf("%s: update cluster status: %w", adapterName, err)
+			}
+		}
 		return reconcile.Result{}, nil
 	}
 
@@ -151,44 +169,65 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		}
 	}
 
-	// Write status conditions.
-	r.applyStatusConditions(&cluster, mwStatus)
-	if err := r.client.Status().Update(ctx, &cluster); err != nil {
-		if apierrors.IsConflict(err) {
-			return reconcile.Result{}, nil
+	// Write status conditions — only update if something changed.
+	if r.applyStatusConditions(&cluster, mwStatus) {
+		if err := r.client.Status().Update(ctx, &cluster); err != nil {
+			if apierrors.IsConflict(err) {
+				return reconcile.Result{}, nil
+			}
+			return reconcile.Result{}, fmt.Errorf("%s: update cluster status: %w", adapterName, err)
 		}
-		return reconcile.Result{}, fmt.Errorf("%s: update cluster status: %w", adapterName, err)
 	}
 
 	log.Infof(ctx, "hc-adapter: cluster %s reconciled, requeueing after %s", clusterID, requeueReady)
 	return reconcile.Result{RequeueAfter: requeueReady}, nil
 }
 
+// setWaitingConditions sets ManifestWorkApplied and HostedClusterAvailable to Unknown.
+// Returns true if either condition changed.
+func (r *Reconciler) setWaitingConditions(cluster *privatev1.Cluster, reason, message string) bool {
+	gen := cluster.Generation
+	a := conditions.Set(&cluster.Status.Conditions, metav1.Condition{
+		Type:               "ManifestWorkApplied",
+		Status:             metav1.ConditionUnknown,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: gen,
+	})
+	b := conditions.Set(&cluster.Status.Conditions, metav1.Condition{
+		Type:               "HostedClusterAvailable",
+		Status:             metav1.ConditionUnknown,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: gen,
+	})
+	return a || b
+}
+
 // applyStatusConditions derives conditions from the ManifestWork status and writes them to the cluster.
-func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus *transport.ManifestWorkStatus) {
+// Returns true if any condition changed.
+func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus *transport.ManifestWorkStatus) bool {
 	gen := cluster.Generation
 
 	if mwStatus == nil {
-		setCondition(&cluster.Status.Conditions, metav1.Condition{
+		a := conditions.Set(&cluster.Status.Conditions, metav1.Condition{
 			Type:               "ManifestWorkApplied",
 			Status:             metav1.ConditionFalse,
 			Reason:             "ManifestWorkNotFound",
 			Message:            "ManifestWork has not been processed yet",
 			ObservedGeneration: gen,
-			LastTransitionTime: metav1.Now(),
 		})
-		setCondition(&cluster.Status.Conditions, metav1.Condition{
+		b := conditions.Set(&cluster.Status.Conditions, metav1.Condition{
 			Type:               "HostedClusterAvailable",
 			Status:             metav1.ConditionFalse,
 			Reason:             "ManifestWorkNotFound",
 			Message:            "ManifestWork has not been processed yet",
 			ObservedGeneration: gen,
-			LastTransitionTime: metav1.Now(),
 		})
-		return
+		return a || b
 	}
 
-	// Derive ManifestWorkApplied condition from top-level MW conditions.
+	// Derive ManifestWorkApplied from top-level MW conditions.
 	appliedStatus := conditionStatus(mwStatus.Conditions, "Applied")
 
 	// Derive HostedClusterAvailable from HC manifest statusFeedback (index 3).
@@ -200,24 +239,22 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 		}
 	}
 
-	setCondition(&cluster.Status.Conditions, metav1.Condition{
+	a := conditions.Set(&cluster.Status.Conditions, metav1.Condition{
 		Type:               "ManifestWorkApplied",
 		Status:             metav1.ConditionStatus(appliedStatus),
 		Reason:             "ManifestWorkApplied",
 		ObservedGeneration: gen,
-		LastTransitionTime: metav1.Now(),
 	})
-	setCondition(&cluster.Status.Conditions, metav1.Condition{
+	b := conditions.Set(&cluster.Status.Conditions, metav1.Condition{
 		Type:               "HostedClusterAvailable",
 		Status:             metav1.ConditionStatus(availableStatus),
 		Reason:             "HostedClusterAvailable",
 		ObservedGeneration: gen,
-		LastTransitionTime: metav1.Now(),
 	})
+	return a || b
 }
 
-// conditionStatus returns the status of the first condition matching condType,
-// or "False" if not found.
+// conditionStatus returns the status of the first condition matching condType, or "False" if not found.
 func conditionStatus(conditions []metav1.Condition, condType string) string {
 	for _, c := range conditions {
 		if c.Type == condType {
@@ -225,23 +262,4 @@ func conditionStatus(conditions []metav1.Condition, condType string) string {
 		}
 	}
 	return "False"
-}
-
-// setCondition upserts a condition into the slice, preserving timestamps when status is unchanged.
-func setCondition(conditions *[]metav1.Condition, c metav1.Condition) {
-	if c.LastTransitionTime.IsZero() {
-		c.LastTransitionTime = metav1.Now()
-	}
-	for i, existing := range *conditions {
-		if existing.Type == c.Type {
-			if existing.Status != c.Status {
-				c.LastTransitionTime = metav1.Now()
-			} else {
-				c.LastTransitionTime = existing.LastTransitionTime
-			}
-			(*conditions)[i] = c
-			return
-		}
-	}
-	*conditions = append(*conditions, c)
 }
