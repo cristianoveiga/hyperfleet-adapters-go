@@ -235,12 +235,20 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	// Derive ManifestWorkApplied from top-level MW conditions.
 	appliedStatus, appliedReason, appliedMessage := mwCondition(mwStatus.Conditions, "Applied")
 
-	// Derive HostedClusterAvailable from HC manifest statusFeedback (index 3).
+	// Derive HostedClusterAvailable and HostedClusterResult fields from HC manifest statusFeedback (index 3).
 	availableStatus := string(metav1.ConditionFalse)
+	apiEndpoint := ""
+	version := ""
 	if len(mwStatus.ResourceStatuses) > hostedClusterManifestIndex {
 		hcFeedback := mwStatus.ResourceStatuses[hostedClusterManifestIndex]
 		if v, ok := hcFeedback["availableCondition"]; ok {
 			availableStatus = v
+		}
+		if v, ok := hcFeedback["controlPlaneEndpoint"]; ok {
+			apiEndpoint = v
+		}
+		if v, ok := hcFeedback["version"]; ok {
+			version = v
 		}
 	}
 
@@ -257,7 +265,23 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 		Reason:             "HostedClusterAvailable",
 		ObservedGeneration: gen,
 	})
-	return a || b
+
+	// Write HostedClusterResult when either field is non-empty.
+	c := false
+	if apiEndpoint != "" || version != "" {
+		desired := &privatev1.HostedClusterResult{
+			APIEndpoint: apiEndpoint,
+			Version:     version,
+		}
+		if cluster.Status.HostedClusterResult == nil ||
+			cluster.Status.HostedClusterResult.APIEndpoint != desired.APIEndpoint ||
+			cluster.Status.HostedClusterResult.Version != desired.Version {
+			cluster.Status.HostedClusterResult = desired
+			c = true
+		}
+	}
+
+	return a || b || c
 }
 
 // mwCondition returns the status, reason, and message of the first MW condition matching condType.
