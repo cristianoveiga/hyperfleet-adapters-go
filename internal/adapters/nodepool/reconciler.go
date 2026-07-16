@@ -22,6 +22,7 @@ import (
 
 const (
 	adapterName       = "nodepool-adapter"
+	requeuePending    = 15 * time.Second
 	requeueAfterApply = 5 * time.Minute
 )
 
@@ -82,7 +83,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Gate: HC must be Available (HostedClusterAvailable condition on the cluster).
-	if !isConditionTrue(cluster.Status.Conditions, "HostedClusterAvailable") {
+	if !conditions.IsTrue(cluster.Status.Conditions, "HostedClusterAvailable") {
 		log.Infof(ctx, "hc not available for nodepool %s, waiting for next event", nodepoolID)
 		if setWaitingNPConditions(&np, "HostedClusterNotAvailable", "Waiting for HostedCluster to become available") {
 			if err := r.client.Status().Update(ctx, &np); err != nil && !apierrors.IsConflict(err) {
@@ -198,6 +199,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		}
 	}
 
+	if !conditions.IsTrue(np.Status.Conditions, "NodePoolManifestWorkApplied") {
+		log.Infof(ctx, "nodepool reconciler: nodepool %s MW not yet applied, requeueing after %s", nodepoolID, requeuePending)
+		return reconcile.Result{RequeueAfter: requeuePending}, nil
+	}
 	log.Infof(ctx, "nodepool reconciler: nodepool %s reconciled, requeueing after %s", nodepoolID, requeueAfterApply)
 	return reconcile.Result{RequeueAfter: requeueAfterApply}, nil
 }
@@ -292,15 +297,6 @@ func (r *Reconciler) applyStatusConditions(np *privatev1.NodePool, mwStatus *tra
 	return a || b || c
 }
 
-// isConditionTrue returns true when the named condition exists and its Status is metav1.ConditionTrue.
-func isConditionTrue(conds []metav1.Condition, condType string) bool {
-	for _, c := range conds {
-		if c.Type == condType {
-			return c.Status == metav1.ConditionTrue
-		}
-	}
-	return false
-}
 
 // defaultReplicas is the hardcoded default for this POC.
 const defaultReplicas = int32(1)
