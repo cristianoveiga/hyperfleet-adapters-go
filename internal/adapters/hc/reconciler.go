@@ -228,7 +228,7 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	}
 
 	// Derive ManifestWorkApplied from top-level MW conditions.
-	appliedStatus := conditionStatus(mwStatus.Conditions, "Applied")
+	appliedStatus, appliedReason, appliedMessage := mwCondition(mwStatus.Conditions, "Applied")
 
 	// Derive HostedClusterAvailable from HC manifest statusFeedback (index 3).
 	availableStatus := string(metav1.ConditionFalse)
@@ -242,7 +242,8 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	a := conditions.Set(&cluster.Status.Conditions, metav1.Condition{
 		Type:               "ManifestWorkApplied",
 		Status:             metav1.ConditionStatus(appliedStatus),
-		Reason:             "ManifestWorkApplied",
+		Reason:             appliedReason,
+		Message:            appliedMessage,
 		ObservedGeneration: gen,
 	})
 	b := conditions.Set(&cluster.Status.Conditions, metav1.Condition{
@@ -254,12 +255,13 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	return a || b
 }
 
-// conditionStatus returns the status of the first condition matching condType, or "False" if not found.
-func conditionStatus(conditions []metav1.Condition, condType string) string {
-	for _, c := range conditions {
+// mwCondition returns the status, reason, and message of the first MW condition matching condType.
+// Defaults: status="False", reason="Unknown", message="".
+func mwCondition(conds []metav1.Condition, condType string) (status, reason, message string) {
+	for _, c := range conds {
 		if c.Type == condType {
-			return string(c.Status)
+			return string(c.Status), c.Reason, c.Message
 		}
 	}
-	return "False"
+	return "False", "Unknown", ""
 }
