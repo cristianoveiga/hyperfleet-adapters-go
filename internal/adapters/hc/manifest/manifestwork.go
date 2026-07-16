@@ -11,9 +11,6 @@ import (
 	workv1 "open-cluster-management.io/api/work/v1"
 )
 
-// hostedClusterManifestIndex is the position of the HostedCluster in the manifest list.
-const hostedClusterManifestIndex = 3
-
 // Input holds all parameters needed to build the HC ManifestWork.
 type Input struct {
 	ClusterID                    string

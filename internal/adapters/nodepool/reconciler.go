@@ -23,7 +23,7 @@ import (
 const (
 	adapterName       = "nodepool-adapter"
 	requeuePending    = 15 * time.Second
-	requeueAfterApply = 5 * time.Minute
+	requeueStable     = 5 * time.Minute
 )
 
 // Reconciler implements the nodepool adapter reconciliation loop.
@@ -203,8 +203,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		log.Infof(ctx, "nodepool reconciler: nodepool %s MW not yet applied, requeueing after %s", nodepoolID, requeuePending)
 		return reconcile.Result{RequeueAfter: requeuePending}, nil
 	}
-	log.Infof(ctx, "nodepool reconciler: nodepool %s reconciled, requeueing after %s", nodepoolID, requeueAfterApply)
-	return reconcile.Result{RequeueAfter: requeueAfterApply}, nil
+	log.Infof(ctx, "nodepool reconciler: nodepool %s reconciled, requeueing after %s", nodepoolID, requeueStable)
+	return reconcile.Result{RequeueAfter: requeueStable}, nil
 }
 
 // setWaitingNPConditions sets NodePoolManifestWorkApplied and NodePoolAvailable to Unknown.

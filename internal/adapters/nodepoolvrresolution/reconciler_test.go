@@ -33,6 +33,22 @@ func newTestLogger(t *testing.T) logger.Logger {
 	return log
 }
 
+// mockStatusWriter is a no-op SubResourceWriter for tests.
+type mockStatusWriter struct{}
+
+func (m *mockStatusWriter) Update(_ context.Context, _ client.Object, _ ...client.SubResourceUpdateOption) error {
+	return nil
+}
+func (m *mockStatusWriter) Create(_ context.Context, _ client.Object, _ client.Object, _ ...client.SubResourceCreateOption) error {
+	return nil
+}
+func (m *mockStatusWriter) Patch(_ context.Context, _ client.Object, _ client.Patch, _ ...client.SubResourcePatchOption) error {
+	return nil
+}
+func (m *mockStatusWriter) Apply(_ context.Context, _ runtime.ApplyConfiguration, _ ...client.SubResourceApplyOption) error {
+	return nil
+}
+
 // mockStoreClient is a minimal client.Client backed by a fixed NodePool and Cluster.
 type mockStoreClient struct {
 	nodepool  *privatev1.NodePool
@@ -88,7 +104,7 @@ func (m *mockStoreClient) Apply(_ context.Context, _ runtime.ApplyConfiguration,
 	return nil
 }
 func (m *mockStoreClient) SubResource(_ string) client.SubResourceClient { return nil }
-func (m *mockStoreClient) Status() client.SubResourceWriter              { return nil }
+func (m *mockStoreClient) Status() client.SubResourceWriter              { return &mockStatusWriter{} }
 func (m *mockStoreClient) Scheme() *runtime.Scheme                       { return nil }
 func (m *mockStoreClient) RESTMapper() meta.RESTMapper                   { return nil }
 func (m *mockStoreClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVersionKind, error) {

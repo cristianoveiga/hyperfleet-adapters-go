@@ -1,6 +1,6 @@
 # hyperfleet-adapters-go
 
-Go implementation of the HyperFleet adapter pipeline. Five adapters run as independent processes, each polling the HyperFleet API for state changes and reconciling a specific aspect of an OpenShift hosted cluster's lifecycle.
+Go implementation of the HyperFleet adapter pipeline. Five adapters run as independent processes, each watching for resource changes on the Orlop API server and reconciling a specific aspect of an OpenShift hosted cluster's lifecycle.
 
 ## Why Go (vs. the YAML/CEL pipeline)
 
@@ -10,59 +10,42 @@ The previous adapter framework drove reconciliation through YAML configuration a
 
 **Compiled binary eliminates the runtime failure surface.** Field name typos, missing map keys, and type mismatches that the YAML/CEL interpreter silently ignores are compile errors in Go. The entire class of "wrong field name in the generated manifest" bugs cannot ship.
 
-**Kubernetes controller pattern.** Each adapter uses the controller-runtime informer pattern — the same infrastructure Kubernetes itself uses for controllers. Multiple events for the same cluster collapse into a single reconcile, retries use exponential backoff automatically, and concurrency is controlled without custom locking. This is battle-tested infrastructure rather than bespoke queueing logic.
+**Kubernetes controller pattern.** Each adapter uses the controller-runtime reconciler pattern — the same infrastructure Kubernetes itself uses for controllers. Multiple events for the same cluster collapse into a single reconcile, retries use exponential backoff automatically, and concurrency is controlled without custom locking. This is battle-tested infrastructure rather than bespoke queueing logic.
 
 **Explicit, readable dependency gating.** Each reconciler's preconditions are ordinary Go code (`placement.Ready() && vr.Ready() && ...`) — readable in one place, testable with a mock API client, and debuggable with standard tooling. The equivalent in the YAML pipeline was CEL conditions and implicit stage ordering spread across multiple config files.
 
 ## Architecture
 
 ```
-HyperFleet API ←→ Adapter ←→ Maestro (ManifestWork) ←→ Management Cluster
+Orlop API server ←→ Adapter (controller-runtime reconciler) ←→ Maestro (ManifestWork) ←→ Management Cluster
 ```
 
-Each adapter runs a self-contained reconciliation loop backed by a polling store:
-
-```
-HyperFleet HTTP API
-    │
-    │  pollLoop (every 10s, or immediately on TriggerRepoll)
-    ▼
-hyperfleetStore  ── in-memory maps: clusters, nodepools ──▶  r.client.Get()
-    │                (SHA-256 hash change detection)                │
-    │  EventAdded / EventModified / EventDeleted                    │ reads from
-    ▼                                                               │ informer cache
-storectrl informer cache                                            │
-    │  (maintains indexed copy; re-lists + re-watches on disconnect)│
-    │                                                               │
-    ▼                                                               │
-event handler → rate-limiting work queue (deduplicates)            │
-    │                                                               │
-    ▼                                                               │
-worker goroutine ──▶ Reconcile(ctx, req) ◀─────────────────────────┘
-                         │
-                         ├── r.hfClient.PutClusterStatus(...)  writes to HyperFleet API
-                         └── store.TriggerRepoll(clusterID)    immediate re-poll
-```
+Each adapter is a controller-runtime reconciler managed by a controller-runtime `Manager`. The Manager connects to the Orlop API server (a Kubernetes-compatible API server backed by an in-memory store) and watches `privatev1.Cluster` or `privatev1.NodePool` objects. Reconcilers never poll on a timer — they react to watch events from the API server, with an explicit `RequeueAfter` for self-healing.
 
 ### Key properties
 
-**Change detection via content hashing.** The polling loop computes a SHA-256 hash of each cluster/nodepool's API response on every tick. An event is only emitted when the hash changes, so reconcilers are not invoked on no-op polls.
+**Controller-runtime event model.** The manager maintains a watch connection to the Orlop API server. Events (add/modify/delete) are deduped through a rate-limiting work queue before reaching `Reconcile()`. Multiple rapid changes to the same object produce a single reconcile call.
 
-**The informer pattern.** The storectrl cache wraps the polling store into a controller-runtime-compatible informer. It performs an initial List to populate its indexed cache, then opens a Watch stream to receive incremental events. Reconcilers read from this indexed cache (`r.client.Get`) — never directly from the HTTP API — so reads are always fast and do not add API load.
+**Idempotent, generation-based applies.** ManifestWorks carry a `hyperfleet.io/generation` annotation. `CompareGenerations()` compares the new generation against the existing one in Maestro and decides whether to Create, Update, or Skip. Identical generations → no-op.
 
-**TriggerRepoll for self-consistency.** After each successful status write, `TriggerRepoll` fires an immediate re-fetch of that cluster so the same adapter process sees its own write reflected in the cache quickly. Cross-adapter propagation (e.g. placement → hc) is bounded by the poll interval — each adapter runs as an independent process with its own store, so a write by one is not visible to another until the next poll tick.
+**Adaptive requeue for ManifestWork status.** After applying a ManifestWork, its status (Applied, HostedCluster available, etc.) is updated asynchronously by the work-agent on the management cluster. The `hc` and `nodepool` adapters use a two-speed requeue:
 
-**Deduplication.** The work queue collapses multiple events for the same cluster into a single reconcile call. If the polling loop fires an add and a modify before a worker picks up the request, only one reconcile runs.
+| State | Interval |
+|---|---|
+| ManifestWork not yet confirmed applied | 15 seconds (`requeuePending`) |
+| Converged (applied) | 5 minutes (`requeueStable`) |
+
+Once converged, the adapter backs off automatically — no external event source is needed.
 
 ## Adapters
 
 | Subcommand | Watches | Responsibility |
 |---|---|---|
-| `version-resolution` | `HyperFleetCluster` | Resolves OCP release version → release image via Cincinnati |
-| `nodepool-vr` | `HyperFleetNodePool` | Same as above for node pools |
-| `placement` | `HyperFleetCluster` | Selects management cluster and DNS base domain |
-| `hc` | `HyperFleetCluster` | Creates/updates HostedCluster ManifestWork on the MC via Maestro |
-| `nodepool` | `HyperFleetNodePool` | Creates/updates NodePool ManifestWork on the MC via Maestro |
+| `version-resolution` | `Cluster` | Resolves OCP release version → release image via Cincinnati |
+| `nodepool-vr` | `NodePool` | Same as above for node pools |
+| `placement` | `Cluster` | Selects management cluster and DNS base domain |
+| `hc` | `Cluster` | Creates/updates HostedCluster ManifestWork on the MC via Maestro |
+| `nodepool` | `NodePool` | Creates/updates NodePool ManifestWork on the MC via Maestro |
 
 ### Pipeline order
 
@@ -78,39 +61,28 @@ The `hc` adapter gates on `placement` and `version-resolution`. The `nodepool` a
 
 ### The gap: ManifestWork status changes don't trigger reconciles
 
-The `hc` and `nodepool` adapters watch `privatev1.Cluster` and `privatev1.NodePool` objects respectively. After applying a ManifestWork to Maestro, the work-agent on the management cluster processes it asynchronously — the ManifestWork status (Applied, HostedCluster available, etc.) changes in Maestro independently of any event on the watched Kubernetes objects.
+The `hc` and `nodepool` adapters watch `Cluster` and `NodePool` objects respectively. After applying a ManifestWork to Maestro, the work-agent on the management cluster processes it asynchronously — the ManifestWork status (Applied, HostedCluster available, etc.) changes in Maestro independently of any event on the watched Kubernetes objects.
 
 Because no Watch is registered for Maestro or ManifestWork status, the adapter would only re-read status on the next `RequeueAfter` tick. With a 5-minute requeue, status propagation was bounded by that full interval even when the ManifestWork had been applied within seconds.
 
 ### Why not a Maestro event bridge?
 
-An alternative (Option B) would be to subscribe to the Maestro gRPC event stream and push `GenericEvent`s into the controller queue whenever a ManifestWork status changes. This was rejected because:
+An alternative would be to subscribe to the Maestro gRPC event stream and push `GenericEvent`s into the controller queue whenever a ManifestWork status changes. This was rejected because:
 
 - It creates a hard dependency on Maestro event delivery. If the event stream lags, disconnects, or drops events, the adapter silently stops reacting.
 - It adds operational complexity: the adapter must maintain a persistent gRPC subscription and handle reconnection.
 - Maestro events are a delivery mechanism, not a consistency guarantee — the adapter would still need to re-read status on reconnect.
 
-This approach matches how the prior `hyperfleet-sentinel` worked: Sentinel polls the HyperFleet API on a fixed timer and does not depend on Maestro events at all.
-
 ### Adaptive requeue (implemented)
 
-The `hc` and `nodepool` adapters use **adaptive requeue intervals**:
-
-| State | Requeue interval |
-|---|---|
-| `ManifestWorkApplied` / `NodePoolManifestWorkApplied` is not `True` | 15 seconds |
-| Condition is `True` (converged) | 5 minutes |
-
-The reconciler checks the condition it just wrote after each apply cycle. When the ManifestWork has not been confirmed as applied yet, it requeues quickly to pick up the Maestro status change as soon as it appears. Once the condition flips to `True`, it backs off to the normal 5-minute interval.
-
-This is self-limiting: once converged, the adapter stops fast-polling automatically. No external event source is needed, and the pattern is identical to how Sentinel polls HyperFleet.
+The `hc` and `nodepool` adapters check the condition they just wrote after each apply cycle. When the ManifestWork has not been confirmed as applied yet, they requeue quickly to pick up the Maestro status change as soon as it appears. Once the condition flips to `True`, they back off to the normal 5-minute interval.
 
 ## Development
 
 ### Prerequisites
 
 - Go 1.26+
-- A running HyperFleet API and Maestro instance
+- A running Orlop API server and Maestro instance
 
 ### Build
 
@@ -125,7 +97,7 @@ make docker-build   # build container image
 
 ```bash
 ./bin/hyperfleet-adapters-go hc \
-  --api-url=http://hyperfleet-api:8000 \
+  --orlop-url=http://hyperfleet-api:8080 \
   --maestro-grpc-addr=maestro-grpc:8090 \
   --maestro-http-addr=http://maestro:8000 \
   --log-level=info
@@ -135,8 +107,7 @@ make docker-build   # build container image
 
 | Flag | Env | Default | Description |
 |---|---|---|---|
-| `--api-url` | `HYPERFLEET_API_URL` | `http://hyperfleet-api:8000` | HyperFleet API base URL |
-| `--poll-interval` | — | `10s` | How often to poll the HyperFleet API for changes |
+| `--orlop-url` | `ORLOP_URL` | `http://hyperfleet-api:8080` | Orlop API server URL |
 | `--workers` | — | `10` | Concurrent reconcile goroutines |
 | `--log-level` | `LOG_LEVEL` | `info` | Log level (debug/info/warn/error) |
 | `--log-format` | `LOG_FORMAT` | `json` | Log format (json/text) |
@@ -157,24 +128,22 @@ internal/
         manifestwork_test.go
     nodepool/                    # nodepool adapter + ManifestWork builder
       manifest/
-  common/
-    hyperfleetapi/               # HyperFleet API client and domain types
-    workqueue/                   # Worker goroutine pool (drives reconcilers from informer events)
-  hyperfleetstore/               # storectrl.Store backed by the HyperFleet HTTP API
-    store.go                     # polling loop, hash-based change detection, Watch/List/Get
-    watcher.go                   # pollingWatcher: buffered channel with overflow-close
-    types.go                     # HyperFleetCluster, HyperFleetNodePool (runtime.Object)
-    convert.go                   # clusterFromAPI / nodepoolFromAPI converters
-    scheme.go                    # scheme registration for store types
-  maestroclient/                 # Maestro REST API client (consumers, resource-bundles)
-  transport/                     # Applies ManifestWork to Maestro via gRPC/REST
+        manifestwork.go          # builds the NodePool ManifestWork spec
+        manifestwork_test.go
+  conditions/                    # IsTrue / Set helpers for metav1.Condition slices
+  maestroclient/                 # Maestro REST + gRPC client (ManifestWork CRUD)
+  manifest/                      # Generation annotation utilities and discovery helpers
+  transport/                     # transport.Client interface + maestro/mock implementations
+  transportclient/               # Lower-level TransportClient interface (Apply/Get/Discover/Delete)
 pkg/
-  logger/                        # Structured logger (zap-backed)
-  version/                       # Binary version info
+  constants/                     # Shared annotation/label key constants
+  errors/                        # Typed error hierarchy (APIError, K8sError, CELError, …)
+  logger/                        # Structured logger (slog-backed, context-aware)
+  version/                       # Binary version info (set via ldflags)
 Dockerfile                       # Multi-stage: UBI9 builder → distroless nonroot
 Makefile
 ```
 
 ## Deployment
 
-Adapters are deployed via ArgoCD on the region cluster using Helm charts under `helm/charts/hyperfleet-*-adapter-go/` in the [gcp-hcp-infra](https://github.com/openshift-online/gcp-hcp-infra) repository. All five adapters share the same container image — the subcommand determines which adapter runs.
+Adapters are deployed via ArgoCD on the region cluster using Helm charts under `helm/charts/hyperkube-*-adapter/` in the [gcp-hcp-infra](https://github.com/openshift-online/gcp-hcp-infra) repository. All five adapters share the same container image — the subcommand determines which adapter runs.

@@ -183,7 +183,7 @@ func testCluster(placementReady, hcAvailable bool) *privatev1.Cluster {
 	}
 	if hcAvailable {
 		c.Status.Conditions = []metav1.Condition{
-			{Type: "Available", Status: metav1.ConditionTrue},
+			{Type: "HostedClusterAvailable", Status: metav1.ConditionTrue, Reason: "Available"},
 		}
 	}
 	return c
@@ -229,7 +229,7 @@ func TestReconcile_HappyPath(t *testing.T) {
 
 	result, err := r.Reconcile(context.Background(), npReq("cluster-test", "np-test"))
 	require.NoError(t, err)
-	require.Equal(t, requeueAfterApply, result.RequeueAfter)
+	require.Equal(t, requeueStable, result.RequeueAfter)
 
 	require.Len(t, tr.ApplyCalls, 1)
 	require.Equal(t, "mc-us-c1", tr.ApplyCalls[0].TargetCluster)

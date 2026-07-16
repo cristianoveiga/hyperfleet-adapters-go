@@ -169,7 +169,7 @@ func TestReconciler_HappyPath(t *testing.T) {
 	result, err := r.Reconcile(context.Background(), clusterReq("cluster-1"))
 
 	require.NoError(t, err)
-	require.Equal(t, reconcile.Result{RequeueAfter: requeueLong}, result)
+	require.Equal(t, reconcile.Result{RequeueAfter: requeueStable}, result)
 	require.False(t, storeClient.updateCalled, "expected no spec Update (result written to status)")
 	require.NotNil(t, storeClient.statusWriter)
 	require.True(t, storeClient.statusWriter.called, "expected Status().Update to be called")

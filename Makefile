@@ -1,7 +1,7 @@
 .PHONY: build test lint docker-build update-golden
 
 BINARY_NAME=hyperfleet-adapters-go
-IMAGE=quay.io/cveiga/hyperfleet-hc-adapter-go
+IMAGE=quay.io/cveiga/hyperfleet-adapters-go
 
 build:
 	go build -o bin/$(BINARY_NAME) ./cmd/...

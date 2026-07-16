@@ -16,6 +16,7 @@ import (
 
 	privatev1 "github.com/thetechnick/orlop-gcp-hcp/api/private/v1"
 
+	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/internal/conditions"
 	"github.com/openshift-hyperfleet/hyperfleet-adapters-go/pkg/logger"
 )
 
@@ -161,7 +162,7 @@ func TestReconciler(t *testing.T) {
 			cluster:        buildCluster("cluster-1", false),
 			selector:       &mockSelector{mcName: "mc-us-c1", baseDomain: "hc-us-central1-abc.example.com"},
 			expectUpdate:   false,
-			expectedResult: reconcile.Result{RequeueAfter: requeueAfter},
+			expectedResult: reconcile.Result{RequeueAfter: requeueStable},
 		},
 		{
 			name:           "already placed: no update, empty result",
@@ -224,7 +225,7 @@ func TestReconciler(t *testing.T) {
 func TestSetCondition(t *testing.T) {
 	t.Run("appends new condition", func(t *testing.T) {
 		var conds []metav1.Condition
-		setCondition(&conds, metav1.Condition{Type: "Applied", Status: metav1.ConditionTrue})
+		conditions.Set(&conds, metav1.Condition{Type: "Applied", Status: metav1.ConditionTrue, Reason: "Test"})
 		require.Len(t, conds, 1)
 		require.Equal(t, "Applied", conds[0].Type)
 		require.Equal(t, metav1.ConditionTrue, conds[0].Status)
@@ -234,9 +235,9 @@ func TestSetCondition(t *testing.T) {
 	t.Run("preserves LastTransitionTime on same status update", func(t *testing.T) {
 		transitioned := metav1.Now()
 		conds := []metav1.Condition{
-			{Type: "Applied", Status: metav1.ConditionTrue, LastTransitionTime: transitioned},
+			{Type: "Applied", Status: metav1.ConditionTrue, LastTransitionTime: transitioned, Reason: "Test"},
 		}
-		setCondition(&conds, metav1.Condition{Type: "Applied", Status: metav1.ConditionTrue})
+		conditions.Set(&conds, metav1.Condition{Type: "Applied", Status: metav1.ConditionTrue, Reason: "Test"})
 		require.Len(t, conds, 1)
 		require.Equal(t, transitioned, conds[0].LastTransitionTime)
 	})
@@ -244,9 +245,9 @@ func TestSetCondition(t *testing.T) {
 	t.Run("updates LastTransitionTime on status change", func(t *testing.T) {
 		old := metav1.Now()
 		conds := []metav1.Condition{
-			{Type: "Applied", Status: metav1.ConditionFalse, LastTransitionTime: old},
+			{Type: "Applied", Status: metav1.ConditionFalse, LastTransitionTime: old, Reason: "Test"},
 		}
-		setCondition(&conds, metav1.Condition{Type: "Applied", Status: metav1.ConditionTrue})
+		conditions.Set(&conds, metav1.Condition{Type: "Applied", Status: metav1.ConditionTrue, Reason: "Test"})
 		require.Len(t, conds, 1)
 		require.False(t, conds[0].LastTransitionTime.IsZero())
 	})

@@ -23,7 +23,7 @@ const (
 	adapterName = "hc-adapter"
 
 	requeuePending = 15 * time.Second
-	requeueReady   = 5 * time.Minute
+	requeueStable  = 5 * time.Minute
 
 	// hostedClusterManifestIndex is the manifest index for the HostedCluster in the ManifestWork.
 	hostedClusterManifestIndex = 3
@@ -184,8 +184,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		log.Infof(ctx, "hc-adapter: cluster %s MW not yet applied, requeueing after %s", clusterID, requeuePending)
 		return reconcile.Result{RequeueAfter: requeuePending}, nil
 	}
-	log.Infof(ctx, "hc-adapter: cluster %s reconciled, requeueing after %s", clusterID, requeueReady)
-	return reconcile.Result{RequeueAfter: requeueReady}, nil
+	log.Infof(ctx, "hc-adapter: cluster %s reconciled, requeueing after %s", clusterID, requeueStable)
+	return reconcile.Result{RequeueAfter: requeueStable}, nil
 }
 
 // setWaitingConditions sets ManifestWorkApplied and HostedClusterAvailable to Unknown.

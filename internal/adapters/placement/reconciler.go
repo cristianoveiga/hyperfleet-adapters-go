@@ -18,7 +18,7 @@ import (
 
 const (
 	adapterName  = "placement-adapter"
-	requeueAfter = 5 * time.Minute
+	requeueStable = 5 * time.Minute
 )
 
 // Reconciler implements the placement adapter reconcile loop.
@@ -88,6 +88,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("placement: update cluster status %s: %w", clusterID, err)
 	}
 
-	r.log.Infof(ctx, "placement: cluster %s placed, requeueing after %s", clusterID, requeueAfter)
-	return reconcile.Result{RequeueAfter: requeueAfter}, nil
+	r.log.Infof(ctx, "placement: cluster %s placed, requeueing after %s", clusterID, requeueStable)
+	return reconcile.Result{RequeueAfter: requeueStable}, nil
 }

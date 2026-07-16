@@ -20,7 +20,7 @@ import (
 const (
 	adapterName         = "version-resolution-adapter"
 	defaultChannelGroup = "candidate"
-	requeueLong         = 5 * time.Minute
+	requeueStable       = 5 * time.Minute
 )
 
 // Reconciler resolves the OCP release image for a cluster via Cincinnati.
@@ -123,7 +123,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	r.log.Infof(ctx, "vr: cluster %s: resolved version %s", clusterID, version)
-	return reconcile.Result{RequeueAfter: requeueLong}, nil
+	return reconcile.Result{RequeueAfter: requeueStable}, nil
 }
 
 // buildChannel constructs the Cincinnati channel name from a version string and channel group.
