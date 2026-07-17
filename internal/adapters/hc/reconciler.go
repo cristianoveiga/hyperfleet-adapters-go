@@ -108,18 +108,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		gcpRegion = gcp.Region
 		gcpNetwork = gcp.Network
 		gcpSubnet = gcp.Subnet
-		if wif := gcp.WorkloadIdentity; wif != nil {
-			wifProjectNumber = wif.ProjectNumber
-			wifPoolID = wif.PoolID
-			wifProviderID = wif.ProviderID
-			if sa := wif.ServiceAccountsRef; sa != nil {
-				nodePoolEmail = sa.NodePoolEmail
-				controlPlaneEmail = sa.ControlPlaneEmail
-				cloudControllerEmail = sa.CloudControllerEmail
-				storageEmail = sa.StorageEmail
-				imageRegistryEmail = sa.ImageRegistryEmail
-				networkEmail = sa.NetworkEmail
-			}
+		wif := gcp.WorkloadIdentity
+		wifProjectNumber = wif.ProjectNumber
+		wifPoolID = wif.PoolID
+		wifProviderID = wif.ProviderID
+		if sa := wif.ServiceAccountsRef; sa != nil {
+			nodePoolEmail = sa.NodePoolEmail
+			controlPlaneEmail = sa.ControlPlaneEmail
+			cloudControllerEmail = sa.CloudControllerEmail
+			storageEmail = sa.StorageEmail
+			imageRegistryEmail = sa.ImageRegistryEmail
+			networkEmail = sa.NetworkEmail
 		}
 	}
 
