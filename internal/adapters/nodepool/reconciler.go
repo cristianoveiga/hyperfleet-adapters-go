@@ -105,7 +105,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Gate: VR version must match spec version.
-	if np.Spec.Release != nil && np.Status.VersionResolution.ReleaseVersion != np.Spec.Release.Version {
+	if np.Status.VersionResolution.ReleaseVersion != np.Spec.Release.Version {
 		log.Infof(ctx, "nodepool VR version %q does not match spec version %q, waiting for next event",
 			np.Status.VersionResolution.ReleaseVersion, np.Spec.Release.Version)
 		msg := fmt.Sprintf("VR version %q does not match spec version %q",
@@ -119,17 +119,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Extract nodepool GCP platform fields.
-	var machineType, gcpRegion, zone string
-	var diskSizeGB int32
+	var machineType, zone string
+	var diskSizeGB int64
 	var diskType string
 	if gcp := np.Spec.Platform.GCP; gcp != nil {
-		gcpRegion = gcp.Region
 		machineType = gcp.MachineType
-		diskSizeGB = gcp.DiskSize
+		diskSizeGB = gcp.DiskSizeGB
 		diskType = gcp.DiskType
-		if len(gcp.Zones) > 0 {
-			zone = gcp.Zones[0]
-		}
+		zone = gcp.Zone
 	}
 	if machineType == "" {
 		machineType = manifest.DefaultMachineType
@@ -142,11 +139,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Extract cluster GCP platform fields.
-	var gcpSubnet string
+	var gcpRegion, gcpSubnet string
 	if gcp := cluster.Spec.Platform.GCP; gcp != nil {
-		if gcpRegion == "" {
-			gcpRegion = gcp.Region
-		}
+		gcpRegion = gcp.Region
 		gcpSubnet = gcp.Subnet
 	}
 	if zone == "" && gcpRegion != "" {

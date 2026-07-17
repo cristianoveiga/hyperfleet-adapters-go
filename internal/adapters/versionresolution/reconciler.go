@@ -52,7 +52,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("vr: get cluster %s: %w", clusterID, err)
 	}
 
-	if cluster.Spec.Release == nil || cluster.Spec.Release.Version == "" {
+	if cluster.Spec.Release.Version == "" {
 		r.log.Infof(ctx, "vr: cluster %s: release version not set, waiting for next event", clusterID)
 		if conditions.Set(&cluster.Status.Conditions, metav1.Condition{
 			Type:               "VersionResolved",

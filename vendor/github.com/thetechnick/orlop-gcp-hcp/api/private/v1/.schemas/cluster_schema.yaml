@@ -40,6 +40,21 @@ properties:
                   type: integer
               type: object
             type: array
+          machineNetwork:
+            items:
+              properties:
+                cidr:
+                  type: string
+              required:
+              - cidr
+              type: object
+            type: array
+          networkType:
+            default: OVNKubernetes
+            enum:
+            - OVNKubernetes
+            - Other
+            type: string
           serviceNetwork:
             items:
               type: string
@@ -115,16 +130,23 @@ properties:
         type: object
       release:
         description: |-
-          ClusterReleaseSpec defines the target OCP release version.
+          ReleaseSpec defines the target OCP release version.
           The version-resolution adapter resolves Version+ChannelGroup to a release image pullspec.
         properties:
           channelGroup:
+            minLength: 1
             type: string
           version:
+            minLength: 1
             type: string
+        required:
+        - channelGroup
+        - version
         type: object
     required:
+    - networking
     - platform
+    - release
     type: object
   status:
     description: ClusterStatus is written by controllers only.

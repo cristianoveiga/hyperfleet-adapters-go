@@ -67,7 +67,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("nodepool-vr: get cluster %s: %w", clusterID, err)
 	}
 
-	if np.Spec.Release == nil || np.Spec.Release.Version == "" {
+	if np.Spec.Release.Version == "" {
 		r.log.Infof(ctx, "nodepool-vr: nodepool %s: release version not set, waiting for next event", nodepoolID)
 		if conditions.Set(&np.Status.Conditions, metav1.Condition{
 			Type:               "NodePoolVersionResolved",

@@ -16,7 +16,7 @@ const (
 	componentName = "node-pool"
 
 	// DefaultDiskSizeGB is the default disk size in GB for GCP node pool boot disks.
-	DefaultDiskSizeGB = int32(100)
+	DefaultDiskSizeGB = int64(100)
 	// DefaultDiskType is the default disk type for GCP node pool boot disks.
 	DefaultDiskType = "pd-ssd"
 	// DefaultMachineType is the default GCP machine type for node pool instances.
@@ -42,7 +42,7 @@ type Input struct {
 	GCPRegion          string
 	Zone               string // optional; falls back to GCPRegion+"-a"
 	GCPSubnet          string
-	DiskSizeGB         int32  // default: 100
+	DiskSizeGB         int64  // default: 100
 	DiskType           string // default: "pd-ssd"
 	ReleaseImage       string
 }

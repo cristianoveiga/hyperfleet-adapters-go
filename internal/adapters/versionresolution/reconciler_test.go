@@ -162,7 +162,7 @@ func TestReconciler_HappyPath(t *testing.T) {
 	cluster.SetName("cluster-1")
 	cluster.SetNamespace("hyperfleet")
 	cluster.SetGeneration(3)
-	cluster.Spec.Release = &privatev1.ClusterReleaseSpec{Version: "4.22.0-ec.4"}
+	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.0-ec.4"}
 
 	r, storeClient := buildReconciler(t, cluster, cincSrv)
 
@@ -182,7 +182,7 @@ func TestReconciler_AlreadyResolved(t *testing.T) {
 	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-2")
 	cluster.SetNamespace("hyperfleet")
-	cluster.Spec.Release = &privatev1.ClusterReleaseSpec{Version: "4.22.0-ec.4"}
+	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.0-ec.4"}
 	cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{
 		ReleaseImage:   "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
 		ReleaseVersion: "4.22.0-ec.4",
@@ -236,7 +236,7 @@ func TestReconciler_VersionNotInCincinnati(t *testing.T) {
 	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-5")
 	cluster.SetNamespace("hyperfleet")
-	cluster.Spec.Release = &privatev1.ClusterReleaseSpec{Version: "4.22.0-ec.4"}
+	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.0-ec.4"}
 
 	r, storeClient := buildReconciler(t, cluster, cincSrv)
 

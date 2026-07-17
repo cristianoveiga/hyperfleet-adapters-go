@@ -146,13 +146,14 @@ func testNodePool(vrVersion string) *privatev1.NodePool {
 			Type: "GCP",
 			GCP: &privatev1.GCPNodePoolPlatform{
 				MachineType: "n2-standard-4",
-				DiskSize:    100,
+				DiskSizeGB:  100,
 				DiskType:    "pd-ssd",
-				Zones:       []string{"us-central1-b"},
+				Zone:        "us-central1-b",
 			},
 		},
 	}
 	if vrVersion != "" {
+		np.Spec.Release = privatev1.ReleaseSpec{Version: vrVersion}
 		np.Status.VersionResolution = &privatev1.VersionResolutionResult{
 			ReleaseImage:   "quay.io/openshift-release-dev/ocp-release:4.16.0-x86_64",
 			ReleaseVersion: vrVersion,

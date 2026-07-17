@@ -33,9 +33,9 @@ type ClusterSpec struct {
 	// +orlop:public
 	Platform ClusterPlatformSpec `json:"platform"`
 	// +orlop:public
-	Release *ClusterReleaseSpec `json:"release,omitempty"`
+	Release ReleaseSpec `json:"release"`
 	// +orlop:public
-	Networking *NetworkingSpec `json:"networking,omitempty"`
+	Networking NetworkingSpec `json:"networking"`
 	// +orlop:public
 	DNS *DNSSpec `json:"dns,omitempty"`
 }
@@ -104,20 +104,35 @@ type GCPResourceLabel struct {
 	Value string `json:"value"`
 }
 
-// ClusterReleaseSpec defines the target OCP release version.
+// ReleaseSpec defines the target OCP release version.
 // The version-resolution adapter resolves Version+ChannelGroup to a release image pullspec.
-type ClusterReleaseSpec struct {
+type ReleaseSpec struct {
 	// +orlop:public
-	Version string `json:"version,omitempty"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Version string `json:"version"`
 	// +orlop:public
-	ChannelGroup string `json:"channelGroup,omitempty"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ChannelGroup string `json:"channelGroup"`
 }
 
 type NetworkingSpec struct {
 	// +orlop:public
+	MachineNetwork []MachineNetworkEntry `json:"machineNetwork,omitempty"`
+	// +orlop:public
 	ClusterNetwork []ClusterNetworkEntry `json:"clusterNetwork,omitempty"`
 	// +orlop:public
 	ServiceNetwork []string `json:"serviceNetwork,omitempty"`
+	// +orlop:public
+	// +kubebuilder:validation:Enum=OVNKubernetes;Other
+	// +kubebuilder:default=OVNKubernetes
+	NetworkType string `json:"networkType,omitempty"`
+}
+
+type MachineNetworkEntry struct {
+	// +orlop:public
+	CIDR string `json:"cidr"`
 }
 
 type ClusterNetworkEntry struct {

@@ -128,7 +128,7 @@ func buildReadyCluster(clusterID, version string) *privatev1.Cluster {
 	c.SetGeneration(2)
 	c.Spec = privatev1.ClusterSpec{
 		InfraID: "infra-xyz",
-		Release: &privatev1.ClusterReleaseSpec{Version: version},
+		Release: privatev1.ReleaseSpec{Version: version},
 		Platform: privatev1.ClusterPlatformSpec{
 			Type: "GCP",
 			GCP: &privatev1.GCPClusterPlatform{
@@ -222,7 +222,7 @@ func TestReconcile_DependenciesNotReady_VRVersionMismatch(t *testing.T) {
 	clusterID := "cluster-abc"
 	// Cluster wants 4.15.0 but VR resolved 4.14.9.
 	cluster := buildReadyCluster(clusterID, "4.14.9")
-	cluster.Spec.Release = &privatev1.ClusterReleaseSpec{Version: "4.15.0"}
+	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.15.0"}
 
 	tr := mock.New()
 	r, _ := buildReconciler(t, cluster, tr)

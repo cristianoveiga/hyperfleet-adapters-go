@@ -81,8 +81,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, nil
 	}
 
-	// Check version match (handle nil Release gracefully).
-	if cluster.Spec.Release != nil && cluster.Status.VersionResolution.ReleaseVersion != cluster.Spec.Release.Version {
+	// Check version match.
+	if cluster.Status.VersionResolution.ReleaseVersion != cluster.Spec.Release.Version {
 		log.Infof(ctx, "vr version %q does not match spec version %q, waiting for next event",
 			cluster.Status.VersionResolution.ReleaseVersion, cluster.Spec.Release.Version)
 		msg := fmt.Sprintf("VR version %q does not match spec version %q",
