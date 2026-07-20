@@ -15,6 +15,47 @@ import (
 	"google.golang.org/api/iterator"
 )
 
+// secretLookup abstracts Secret Manager operations so they can be replaced in
+// tests without a live GCP connection.
+type secretLookup interface {
+	listSecrets(ctx context.Context, parent, filter string) ([]*secretmanagerpb.Secret, error)
+	accessSecretVersion(ctx context.Context, name string) ([]byte, error)
+}
+
+// realSMClient adapts *secretmanager.Client to the secretLookup interface.
+type realSMClient struct {
+	c *secretmanager.Client
+}
+
+func (r *realSMClient) listSecrets(ctx context.Context, parent, filter string) ([]*secretmanagerpb.Secret, error) {
+	it := r.c.ListSecrets(ctx, &secretmanagerpb.ListSecretsRequest{
+		Parent: parent,
+		Filter: filter,
+	})
+	var secrets []*secretmanagerpb.Secret
+	for {
+		secret, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		secrets = append(secrets, secret)
+	}
+	return secrets, nil
+}
+
+func (r *realSMClient) accessSecretVersion(ctx context.Context, name string) ([]byte, error) {
+	result, err := r.c.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{
+		Name: name,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.Payload.Data, nil
+}
+
 // DynamicSelector discovers eligible management clusters and DNS zones at
 // selection time by cross-checking Secret Manager secrets against Maestro
 // consumers, mirroring the logic of the YAML placement adapter's Job script.
@@ -30,7 +71,7 @@ import (
 //
 // Selection is round-robin across eligible MCs and domains.
 type DynamicSelector struct {
-	smClient   *secretmanager.Client
+	smLookup   secretLookup
 	project    string
 	maestroURL string
 	httpClient *http.Client
@@ -44,7 +85,7 @@ type DynamicSelector struct {
 // maestroURL is the Maestro HTTP base URL (e.g. "http://maestro.hyperfleet.svc.cluster.local:8000").
 func NewDynamicSelector(smClient *secretmanager.Client, project, maestroURL string) *DynamicSelector {
 	return &DynamicSelector{
-		smClient:   smClient,
+		smLookup:   &realSMClient{c: smClient},
 		project:    project,
 		maestroURL: maestroURL,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
@@ -106,21 +147,16 @@ func (s *DynamicSelector) eligibleMCs(ctx context.Context) ([]string, error) {
 // smMCNames lists secrets in the project with label maestro-consumer-name:* and
 // returns the label values (MC names).
 func (s *DynamicSelector) smMCNames(ctx context.Context) ([]string, error) {
-	req := &secretmanagerpb.ListSecretsRequest{
-		Parent: fmt.Sprintf("projects/%s", s.project),
-		Filter: "labels.maestro-consumer-name:*",
+	secrets, err := s.smLookup.listSecrets(ctx,
+		fmt.Sprintf("projects/%s", s.project),
+		"labels.maestro-consumer-name:*",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list secrets: %w", err)
 	}
 
 	var names []string
-	it := s.smClient.ListSecrets(ctx, req)
-	for {
-		secret, err := it.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("list secrets: %w", err)
-		}
+	for _, secret := range secrets {
 		if mc := secret.Labels["maestro-consumer-name"]; mc != "" {
 			names = append(names, mc)
 		}
@@ -172,21 +208,16 @@ func (s *DynamicSelector) maestroConsumerNames(ctx context.Context) ([]string, e
 // hcDNSDomains reads the argocd-cluster region secret from Secret Manager and
 // returns the comma-separated domains from its meta_hc_dns_domains field.
 func (s *DynamicSelector) hcDNSDomains(ctx context.Context) ([]string, error) {
-	req := &secretmanagerpb.ListSecretsRequest{
-		Parent: fmt.Sprintf("projects/%s", s.project),
-		Filter: `labels.infra-type:region name:argocd-cluster`,
+	secrets, err := s.smLookup.listSecrets(ctx,
+		fmt.Sprintf("projects/%s", s.project),
+		`labels.infra-type:region name:argocd-cluster`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list argocd-cluster secrets: %w", err)
 	}
 
 	var secretName string
-	it := s.smClient.ListSecrets(ctx, req)
-	for {
-		secret, err := it.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("list argocd-cluster secrets: %w", err)
-		}
+	for _, secret := range secrets {
 		secretName = secret.Name
 		break
 	}
@@ -195,22 +226,20 @@ func (s *DynamicSelector) hcDNSDomains(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("no secret matching name:argocd-cluster with labels.infra-type=region found in project %s", s.project)
 	}
 
-	result, err := s.smClient.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{
-		Name: secretName + "/versions/latest",
-	})
+	data, err := s.smLookup.accessSecretVersion(ctx, secretName+"/versions/latest")
 	if err != nil {
 		return nil, fmt.Errorf("access secret %s: %w", secretName, err)
 	}
 
-	var data struct {
+	var payload struct {
 		MetaHCDNSDomains string `json:"meta_hc_dns_domains"`
 	}
-	if err := json.Unmarshal(result.Payload.Data, &data); err != nil {
+	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, fmt.Errorf("unmarshal secret payload: %w", err)
 	}
 
 	var domains []string
-	for _, d := range strings.Split(data.MetaHCDNSDomains, ",") {
+	for _, d := range strings.Split(payload.MetaHCDNSDomains, ",") {
 		if d = strings.TrimSpace(d); d != "" {
 			domains = append(domains, d)
 		}
